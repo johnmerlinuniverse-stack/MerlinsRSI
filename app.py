@@ -152,12 +152,12 @@ with st.sidebar:
 # DATA LOADING
 # ============================================================
 
-@st.cache_data(ttl=180, show_spinner=False)
+@st.cache_data(ttl=180, show_spinner="🧙‍♂️ Scanning crypto market...")
 def scan_all_coins(coins: tuple, timeframes_to_scan: tuple, include_smc: bool = False) -> pd.DataFrame:
     """
     Main scanning function. Fetches data and calculates all indicators
-    for all coins. Uses Binance when available, CoinGecko as fallback.
-    Returns a comprehensive DataFrame.
+    for all coins. Uses CCXT with auto-fallback.
+    NOTE: No st.* UI calls allowed inside @st.cache_data!
     """
     results = []
 
@@ -165,11 +165,6 @@ def scan_all_coins(coins: tuple, timeframes_to_scan: tuple, include_smc: bool = 
     ex_status = get_exchange_status()
     active_ex = ex_status["active_exchange"]
     ex_connected = ex_status["connected"]
-
-    if ex_connected:
-        st.toast(f"✅ Connected to {active_ex.upper()}", icon="🟢")
-    else:
-        st.toast("⚠️ No exchange reachable — using CoinGecko only", icon="🟡")
 
     # --- Step 2: Get market data from CoinGecko (always works) ---
     market_df = fetch_all_market_data()
@@ -188,16 +183,13 @@ def scan_all_coins(coins: tuple, timeframes_to_scan: tuple, include_smc: bool = 
 
     # --- Step 5: Scan each coin ---
     coins_list = list(coins)
-    progress_bar = st.progress(0, text="Scanning crypto market...")
     total = len(coins_list)
-    scanned = 0
 
     for idx, symbol in enumerate(coins_list):
-        progress_bar.progress((idx + 1) / total, text=f"Scanning {symbol}... ({idx+1}/{total})")
 
         row = {"symbol": symbol}
 
-        # --- Get price/change from Binance tickers OR CoinGecko ---
+        # --- Get price/change from tickers OR CoinGecko ---
         ticker = tickers.get(symbol, {})
         mkt = market_lookup.get(symbol, {})
 
@@ -290,15 +282,12 @@ def scan_all_coins(coins: tuple, timeframes_to_scan: tuple, include_smc: bool = 
             row["reasons"] = ""
 
         results.append(row)
-        scanned += 1
 
-        # Rate limit: CoinGecko free = 10-30 req/min
+        # Rate limiting
         if not ex_connected and idx % 5 == 0 and idx > 0:
             time.sleep(2)
         elif idx % 15 == 0 and idx > 0:
             time.sleep(0.3)
-
-    progress_bar.empty()
 
     if not results:
         return pd.DataFrame()
