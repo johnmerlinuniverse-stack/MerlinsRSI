@@ -594,11 +594,11 @@ with tab_heatmap:
                       annotation_font_color="#FF6347")
         fig.add_hrect(y0=70, y1=80, fillcolor="rgba(255,99,71,0.06)", line_width=0,
                       annotation_text="STRONG", annotation_position="top right",
-                      annotation_font_color="#FF634777")
+                      annotation_font_color="rgba(255,99,71,0.5)")
         fig.add_hrect(y0=60, y1=70, fillcolor="rgba(255,215,0,0.03)", line_width=0)
         fig.add_hrect(y0=30, y1=40, fillcolor="rgba(50,205,50,0.06)", line_width=0,
                       annotation_text="WEAK", annotation_position="bottom right",
-                      annotation_font_color="#00FF7F77")
+                      annotation_font_color="rgba(0,255,127,0.5)")
         fig.add_hrect(y0=0, y1=30, fillcolor="rgba(0,255,127,0.12)", line_width=0,
                       annotation_text="OVERSOLD", annotation_position="bottom right",
                       annotation_font_color="#00FF7F")
