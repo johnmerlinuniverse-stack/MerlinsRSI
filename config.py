@@ -1,5 +1,5 @@
 """
-Configuration for Crypto RSI Dashboard
+Configuration for Merlin Crypto Scanner
 """
 
 # ============================================================
@@ -17,7 +17,7 @@ RSI_OVERSOLD = 30
 RSI_STRONG_OVERBOUGHT = 80
 RSI_STRONG_OVERSOLD = 20
 
-# Timeframes for Binance klines
+# Timeframes for klines
 TIMEFRAMES = {
     "1h": "1h",
     "4h": "4h",
@@ -25,7 +25,7 @@ TIMEFRAMES = {
     "1W": "1w",
 }
 
-# Number of candles to fetch (need at least RSI_PERIOD + buffer)
+# Number of candles to fetch
 KLINE_LIMIT = 100
 
 # ============================================================
@@ -46,9 +46,37 @@ SIGNAL_RULES = {
 }
 
 # ============================================================
-# TOP 150+ COINS (Binance USDT pairs)
+# COIN LISTS
 # ============================================================
-TOP_COINS = [
+
+# CryptoWaves-style curated list (107 coins)
+# Pattern: Top ~50 Market Cap + popular high-volume altcoins
+# Includes: Major L1s, DeFi, Meme coins, AI tokens, Gaming
+CRYPTOWAVES_COINS = [
+    # Top 10 by Market Cap
+    "BTC", "ETH", "XRP", "BNB", "SOL", "TRX", "DOGE", "ADA", "LINK", "AVAX",
+    # Top 11-30
+    "XLM", "HBAR", "DOT", "BCH", "LTC", "SHIB", "UNI", "TON", "NEAR",
+    "AAVE", "ZEC", "SUI",
+    # Top 31-60
+    "PEPE", "POL", "WLD", "ATOM", "ENA", "ONDO", "QNT", "RENDER",
+    "FIL", "VET", "ETC", "TAO", "INJ", "STX", "ICP",
+    # Top 61-100
+    "ARB", "OP", "FET", "SEI", "JUP", "BONK", "FLOKI", "IMX",
+    "APT", "ALGO", "GRT", "THETA", "SAND", "MANA", "AXS",
+    "GALA", "CRV", "DASH", "LDO", "JASMY", "IOTA",
+    "PENGU", "VIRTUAL", "PUMP", "MORPHO",
+    # Popular altcoins beyond Top 100 (high volume / trending)
+    "PYTH", "SUN", "TIA", "CFX", "ENS", "WIF", "COMP", "DEXE",
+    "LUNC", "STRK", "PENDLE", "ETHFI", "CHZ", "XTZ", "BAT",
+    "ZRO", "NEXO", "CAKE", "TRUMP", "PAXG", "GNO", "CVX",
+    "ZK", "GLM", "KITE", "AWE", "SKY",
+    # Stablecoins (for reference)
+    "USDC", "USDE",
+]
+
+# Full list for "Top 150+" mode
+TOP_COINS_EXTENDED = [
     "BTC", "ETH", "BNB", "XRP", "ADA", "DOGE", "SOL", "TRX", "DOT", "MATIC",
     "LTC", "SHIB", "AVAX", "LINK", "UNI", "ATOM", "XLM", "ETC", "HBAR", "FIL",
     "ICP", "APT", "NEAR", "ARB", "VET", "OP", "GRT", "ALGO", "STX", "INJ",
@@ -65,9 +93,14 @@ TOP_COINS = [
     "ENA", "W", "ONDO", "TAO", "RENDER", "AR", "KAS", "ORDI", "BOME", "NOT",
     "IO", "ZRO", "LISTA", "BB", "REZ", "ETHFI", "SAGA", "TNSR", "OMNI", "ALT",
     "POLYX", "BCH", "TRUMP", "DEXE", "VIRTUAL", "MORPHO", "PENGU", "MOVE",
+    "TON", "SUN", "CFX", "ENS", "LUNC", "PAXG", "PUMP", "NEXO", "CAKE",
+    "GNO", "CVX", "ZK", "GLM", "KITE", "AWE", "SKY",
 ]
 
-# CoinGecko ID mapping for coins that differ from symbol
+# Default list (used when no option selected)
+TOP_COINS = CRYPTOWAVES_COINS
+
+# CoinGecko ID mapping
 COINGECKO_ID_MAP = {
     "BTC": "bitcoin", "ETH": "ethereum", "BNB": "binancecoin", "XRP": "ripple",
     "ADA": "cardano", "DOGE": "dogecoin", "SOL": "solana", "TRX": "tron",
@@ -101,20 +134,25 @@ COINGECKO_ID_MAP = {
     "AR": "arweave", "ORDI": "ordinals", "NOT": "notcoin",
     "BCH": "bitcoin-cash", "TRUMP": "official-trump", "VIRTUAL": "virtual-protocol",
     "PENGU": "pudgy-penguins", "STX": "blockstack", "INJ": "injective-protocol",
-    "IMX": "immutable-x", "ALGO": "algorand",
+    "IMX": "immutable-x", "TON": "the-open-network", "SUN": "sun-token",
+    "CFX": "conflux-token", "ENS": "ethereum-name-service", "LUNC": "terra-luna",
+    "PAXG": "pax-gold", "PUMP": "pump-fun", "NEXO": "nexo",
+    "CAKE": "pancakeswap-token", "GNO": "gnosis", "CVX": "convex-finance",
+    "MORPHO": "morpho", "POL": "polygon-ecosystem-token",
+    "USDC": "usd-coin", "USDE": "ethena-usde",
 }
 
 # ============================================================
 # ALERT SETTINGS
 # ============================================================
-ALERT_COOLDOWN_MINUTES = 60  # Don't re-alert for same coin within this period
+ALERT_COOLDOWN_MINUTES = 60
 
 # ============================================================
 # UI SETTINGS
 # ============================================================
 PAGE_TITLE = "🧙‍♂️ Merlin Crypto Scanner"
 PAGE_ICON = "🧙‍♂️"
-REFRESH_INTERVAL = 300  # seconds (5 min)
+REFRESH_INTERVAL = 300
 
 # Color scheme
 COLORS = {
