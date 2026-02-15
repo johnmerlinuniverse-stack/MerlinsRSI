@@ -1,62 +1,105 @@
 """
-Data fetching from Binance and CoinGecko APIs.
-Binance: OHLCV klines for technical analysis (fast, free, no auth)
-CoinGecko: Market cap, rank, metadata, OHLC fallback (free tier)
-
-Uses Binance as primary kline source, falls back to CoinGecko if unavailable.
+Data fetching using CCXT (108+ exchanges) + CoinGecko.
+Auto-fallback: Binance → Bybit → OKX → KuCoin → Gate → CoinGecko.
+No API keys needed for public market data.
 """
 
 import time
+import ccxt
 import requests
 import pandas as pd
 import numpy as np
 import streamlit as st
-from config import BINANCE_BASE_URL, COINGECKO_BASE_URL, KLINE_LIMIT, TOP_COINS, COINGECKO_ID_MAP
+from config import COINGECKO_BASE_URL, KLINE_LIMIT, COINGECKO_ID_MAP
 
 
 # ============================================================
-# CONNECTIVITY CHECK
+# EXCHANGE PRIORITY (tried in order, first working wins)
+# ============================================================
+EXCHANGE_PRIORITY = [
+    ("binance", ccxt.binance),
+    ("bybit", ccxt.bybit),
+    ("okx", ccxt.okx),
+    ("kucoin", ccxt.kucoin),
+    ("gate", ccxt.gateio),
+    ("kraken", ccxt.kraken),
+]
+
+# Timeframe mapping (our labels → ccxt format)
+TF_MAP = {
+    "1h": "1h",
+    "4h": "4h",
+    "1d": "1d",
+    "1D": "1d",
+    "1w": "1w",
+    "1W": "1w",
+}
+
+
+# ============================================================
+# EXCHANGE CONNECTION (cached, auto-fallback)
 # ============================================================
 
-@st.cache_data(ttl=600, show_spinner=False)
-def check_binance_available() -> bool:
-    """Check if Binance API is reachable. Cached 10 min."""
+@st.cache_resource(show_spinner=False)
+def get_working_exchange() -> tuple:
+    """
+    Find the first reachable exchange. Returns (name, exchange_object).
+    Cached for the entire session (st.cache_resource).
+    """
+    for name, exchange_cls in EXCHANGE_PRIORITY:
+        try:
+            ex = exchange_cls({
+                "enableRateLimit": True,
+                "timeout": 10000,
+                "options": {"defaultType": "spot"},
+            })
+            # Quick connectivity test
+            ex.fetch_ticker("BTC/USDT")
+            return (name, ex)
+        except Exception:
+            continue
+
+    return ("none", None)
+
+
+def get_exchange_status() -> dict:
+    """Check which exchanges are reachable."""
+    name, ex = get_working_exchange()
+    return {
+        "active_exchange": name,
+        "connected": ex is not None,
+    }
+
+
+# ============================================================
+# CCXT DATA FETCHING
+# ============================================================
+
+def fetch_ohlcv_ccxt(symbol: str, timeframe: str, limit: int = KLINE_LIMIT) -> pd.DataFrame:
+    """
+    Fetch OHLCV data via CCXT from the best available exchange.
+    Returns DataFrame with: open_time, open, high, low, close, volume
+    """
+    name, ex = get_working_exchange()
+    if ex is None:
+        return pd.DataFrame()
+
+    pair = f"{symbol}/USDT"
+    tf = TF_MAP.get(timeframe, timeframe)
+
     try:
-        resp = requests.get(f"{BINANCE_BASE_URL}/ping", timeout=5)
-        return resp.status_code == 200
-    except Exception:
-        return False
-
-
-# ============================================================
-# BINANCE API
-# ============================================================
-
-def get_binance_klines(symbol: str, interval: str, limit: int = KLINE_LIMIT) -> pd.DataFrame:
-    """Fetch OHLCV klines from Binance for a given symbol and interval."""
-    pair = f"{symbol}USDT"
-    url = f"{BINANCE_BASE_URL}/klines"
-    params = {"symbol": pair, "interval": interval, "limit": limit}
-
-    try:
-        resp = requests.get(url, params=params, timeout=10)
-        if resp.status_code != 200:
-            return pd.DataFrame()
-        data = resp.json()
-        if not data or isinstance(data, dict):
+        ohlcv = ex.fetch_ohlcv(pair, tf, limit=limit)
+        if not ohlcv:
             return pd.DataFrame()
 
-        df = pd.DataFrame(data, columns=[
-            "open_time", "open", "high", "low", "close", "volume",
-            "close_time", "quote_volume", "trades", "taker_buy_base",
-            "taker_buy_quote", "ignore"
-        ])
+        df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
+        df["open_time"] = pd.to_datetime(df["timestamp"], unit="ms")
 
-        for col in ["open", "high", "low", "close", "volume", "quote_volume"]:
+        for col in ["open", "high", "low", "close", "volume"]:
             df[col] = df[col].astype(float)
 
-        df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
-        df["close_time"] = pd.to_datetime(df["close_time"], unit="ms")
+        df["quote_volume"] = df["volume"] * df["close"]
+        df["trades"] = 0
 
         return df[["open_time", "open", "high", "low", "close", "volume", "quote_volume", "trades"]]
 
@@ -64,26 +107,56 @@ def get_binance_klines(symbol: str, interval: str, limit: int = KLINE_LIMIT) -> 
         return pd.DataFrame()
 
 
-def get_all_binance_tickers() -> dict:
-    """Fetch all 24h tickers at once (single API call for all coins)."""
-    url = f"{BINANCE_BASE_URL}/ticker/24hr"
+def fetch_ticker_ccxt(symbol: str) -> dict:
+    """Fetch current ticker data for a symbol."""
+    name, ex = get_working_exchange()
+    if ex is None:
+        return {}
+
+    pair = f"{symbol}/USDT"
+
     try:
-        resp = requests.get(url, timeout=15)
-        if resp.status_code == 200:
-            data = resp.json()
-            if isinstance(data, list):
-                return {
-                    item["symbol"].replace("USDT", ""): item
-                    for item in data
-                    if item["symbol"].endswith("USDT")
-                }
+        ticker = ex.fetch_ticker(pair)
+        return {
+            "last": ticker.get("last", 0),
+            "change_pct": ticker.get("percentage", 0),
+            "volume": ticker.get("quoteVolume", 0) or ticker.get("baseVolume", 0) * (ticker.get("last", 1) or 1),
+            "high": ticker.get("high", 0),
+            "low": ticker.get("low", 0),
+        }
+    except Exception:
+        return {}
+
+
+def fetch_all_tickers_ccxt() -> dict:
+    """Fetch all tickers at once (much faster than one-by-one)."""
+    name, ex = get_working_exchange()
+    if ex is None:
+        return {}
+
+    try:
+        if ex.has.get("fetchTickers", False):
+            all_tickers = ex.fetch_tickers()
+            result = {}
+            for pair, ticker in all_tickers.items():
+                if pair.endswith("/USDT"):
+                    sym = pair.replace("/USDT", "")
+                    result[sym] = {
+                        "last": ticker.get("last", 0),
+                        "change_pct": ticker.get("percentage", 0),
+                        "volume": ticker.get("quoteVolume", 0) or 0,
+                        "high": ticker.get("high", 0),
+                        "low": ticker.get("low", 0),
+                    }
+            return result
     except Exception:
         pass
+
     return {}
 
 
 # ============================================================
-# COINGECKO API
+# COINGECKO FALLBACK
 # ============================================================
 
 def _get_coingecko_id(symbol: str) -> str:
@@ -92,7 +165,7 @@ def _get_coingecko_id(symbol: str) -> str:
 
 
 def get_coingecko_market_data(page: int = 1, per_page: int = 250) -> list:
-    """Fetch market data from CoinGecko (market cap, rank, prices, changes)."""
+    """Fetch market data from CoinGecko (prices, changes, volume, rank)."""
     url = f"{COINGECKO_BASE_URL}/coins/markets"
     params = {
         "vs_currency": "usd",
@@ -108,19 +181,15 @@ def get_coingecko_market_data(page: int = 1, per_page: int = 250) -> list:
         if resp.status_code == 200:
             return resp.json()
         elif resp.status_code == 429:
-            time.sleep(10)  # Rate limit hit, wait
-            return []
+            time.sleep(10)
     except Exception:
         pass
     return []
 
 
-def get_coingecko_ohlc(cg_id: str, days: int = 7) -> pd.DataFrame:
-    """
-    Fetch OHLC data from CoinGecko (free, no auth).
-    Returns DataFrame with open, high, low, close columns.
-    Granularity: 4h candles for 1-14 days, daily for 15+ days.
-    """
+def get_coingecko_ohlc(symbol: str, days: int = 7) -> pd.DataFrame:
+    """Fetch OHLC from CoinGecko as last-resort fallback."""
+    cg_id = _get_coingecko_id(symbol)
     url = f"{COINGECKO_BASE_URL}/coins/{cg_id}/ohlc"
     params = {"vs_currency": "usd", "days": days}
 
@@ -139,8 +208,7 @@ def get_coingecko_ohlc(cg_id: str, days: int = 7) -> pd.DataFrame:
         for col in ["open", "high", "low", "close"]:
             df[col] = df[col].astype(float)
 
-        # CoinGecko OHLC doesn't include volume — estimate from price range
-        df["volume"] = (df["high"] - df["low"]) / df["close"] * 1e6  # proxy
+        df["volume"] = (df["high"] - df["low"]) / df["close"] * 1e6
         df["quote_volume"] = df["volume"] * df["close"]
         df["trades"] = 0
 
@@ -150,108 +218,44 @@ def get_coingecko_ohlc(cg_id: str, days: int = 7) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-def get_coingecko_market_chart(cg_id: str, days: int = 30) -> pd.DataFrame:
-    """
-    Fetch price history from CoinGecko /market_chart endpoint.
-    Returns OHLCV-like DataFrame synthesized from price data.
-    Good for 1D+ timeframes.
-    """
-    url = f"{COINGECKO_BASE_URL}/coins/{cg_id}/market_chart"
-    params = {"vs_currency": "usd", "days": days}
-
-    try:
-        resp = requests.get(url, params=params, timeout=15)
-        if resp.status_code != 200:
-            return pd.DataFrame()
-
-        data = resp.json()
-        prices = data.get("prices", [])
-        volumes = data.get("total_volumes", [])
-
-        if not prices:
-            return pd.DataFrame()
-
-        df_price = pd.DataFrame(prices, columns=["timestamp", "close"])
-        df_price["open_time"] = pd.to_datetime(df_price["timestamp"], unit="ms")
-
-        if volumes:
-            df_vol = pd.DataFrame(volumes, columns=["timestamp", "volume"])
-            df_price = df_price.merge(df_vol, on="timestamp", how="left")
-        else:
-            df_price["volume"] = 0
-
-        # Synthesize OHLC from close prices
-        df_price["open"] = df_price["close"].shift(1).fillna(df_price["close"])
-        df_price["high"] = df_price[["open", "close"]].max(axis=1) * 1.001
-        df_price["low"] = df_price[["open", "close"]].min(axis=1) * 0.999
-        df_price["quote_volume"] = df_price["volume"]
-        df_price["trades"] = 0
-
-        return df_price[["open_time", "open", "high", "low", "close", "volume", "quote_volume", "trades"]]
-
-    except Exception:
-        return pd.DataFrame()
-
-
 # ============================================================
-# SMART FETCHING WITH FALLBACK
+# SMART FETCHING (CCXT → CoinGecko fallback)
 # ============================================================
 
-def fetch_klines_smart(symbol: str, interval: str, use_binance: bool = True) -> pd.DataFrame:
+@st.cache_data(ttl=120, show_spinner=False)
+def fetch_klines_smart(symbol: str, interval: str) -> pd.DataFrame:
     """
     Fetch klines with automatic fallback:
-    1. Try Binance (if available)
-    2. Fall back to CoinGecko OHLC
-    3. Fall back to CoinGecko market_chart
+    1. CCXT (auto-selected best exchange)
+    2. CoinGecko OHLC
     """
-    # --- Try Binance first ---
-    if use_binance:
-        df = get_binance_klines(symbol, interval)
-        if not df.empty:
-            return df
-
-    # --- CoinGecko fallback ---
-    cg_id = _get_coingecko_id(symbol)
-
-    # Map interval to CoinGecko days parameter
-    interval_to_days = {
-        "1h": 2,    # 2 days of hourly-ish data
-        "4h": 7,    # 7 days = 4h candles
-        "1d": 30,   # 30 days = daily candles
-        "1w": 180,  # 180 days for weekly view
-    }
-    days = interval_to_days.get(interval, 7)
-
-    # Try OHLC endpoint (better for 4h)
-    df = get_coingecko_ohlc(cg_id, days=days)
+    # Try CCXT first
+    df = fetch_ohlcv_ccxt(symbol, interval)
     if not df.empty and len(df) >= 15:
         return df
 
-    # Try market_chart endpoint (better for 1D/1W)
-    df = get_coingecko_market_chart(cg_id, days=max(days, 30))
+    # CoinGecko fallback
+    interval_to_days = {"1h": 2, "4h": 7, "1d": 30, "1D": 30, "1w": 180, "1W": 180}
+    days = interval_to_days.get(interval, 7)
+    df = get_coingecko_ohlc(symbol, days=days)
     if not df.empty:
         return df
 
     return pd.DataFrame()
 
 
-# ============================================================
-# BATCH DATA FETCHING
-# ============================================================
-
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_all_market_data() -> pd.DataFrame:
     """
-    Fetch market overview data from CoinGecko.
+    Fetch market overview from CoinGecko (always reliable for metadata).
     Returns DataFrame with market cap, rank, price changes.
-    Cached for 5 minutes.
     """
     all_data = []
     for page in [1, 2]:
         data = get_coingecko_market_data(page=page)
         if data:
             all_data.extend(data)
-        time.sleep(1.5)  # Rate limit respect
+        time.sleep(1.5)
 
     if not all_data:
         return pd.DataFrame()
@@ -274,23 +278,7 @@ def fetch_all_market_data() -> pd.DataFrame:
     return df
 
 
-@st.cache_data(ttl=120, show_spinner=False)
-def fetch_klines_cached(symbol: str, interval: str, use_binance: bool = True) -> pd.DataFrame:
-    """Fetch and cache klines for a single coin/interval. Cached 2 min."""
-    return fetch_klines_smart(symbol, interval, use_binance)
-
-
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_all_tickers() -> dict:
-    """Fetch all Binance 24h tickers. Cached 1 min."""
-    return get_all_binance_tickers()
-
-
-def fetch_multi_timeframe_klines(symbol: str, timeframes: dict, use_binance: bool = True) -> dict:
-    """Fetch klines for multiple timeframes for a single coin."""
-    result = {}
-    for tf_name, tf_interval in timeframes.items():
-        df = fetch_klines_cached(symbol, tf_interval, use_binance)
-        if not df.empty:
-            result[tf_name] = df
-    return result
+    """Fetch all tickers via CCXT. Cached 1 min."""
+    return fetch_all_tickers_ccxt()

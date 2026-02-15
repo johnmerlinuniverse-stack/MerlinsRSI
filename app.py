@@ -17,8 +17,8 @@ from config import (
     RSI_OVERBOUGHT, RSI_OVERSOLD, RSI_STRONG_OVERBOUGHT, RSI_STRONG_OVERSOLD,
 )
 from data_fetcher import (
-    fetch_all_market_data, fetch_klines_cached, fetch_all_tickers,
-    check_binance_available,
+    fetch_all_market_data, fetch_klines_smart, fetch_all_tickers,
+    get_exchange_status,
 )
 from indicators import (
     calculate_rsi, calculate_macd, calculate_volume_analysis,
@@ -145,7 +145,7 @@ with st.sidebar:
     
     st.markdown("---")
     st.caption(f"Last refresh: {datetime.now().strftime('%H:%M:%S')}")
-    st.caption("Data: Binance + CoinGecko")
+    st.caption("Data: CCXT (auto-exchange) + CoinGecko")
 
 
 # ============================================================
@@ -161,20 +161,22 @@ def scan_all_coins(coins: tuple, timeframes_to_scan: tuple, include_smc: bool = 
     """
     results = []
 
-    # --- Step 1: Check which data source is available ---
-    binance_ok = check_binance_available()
+    # --- Step 1: Check which exchange is available ---
+    ex_status = get_exchange_status()
+    active_ex = ex_status["active_exchange"]
+    ex_connected = ex_status["connected"]
 
-    if binance_ok:
-        st.toast("✅ Binance API connected", icon="🟢")
+    if ex_connected:
+        st.toast(f"✅ Connected to {active_ex.upper()}", icon="🟢")
     else:
-        st.toast("⚠️ Binance unavailable — using CoinGecko data", icon="🟡")
+        st.toast("⚠️ No exchange reachable — using CoinGecko only", icon="🟡")
 
     # --- Step 2: Get market data from CoinGecko (always works) ---
     market_df = fetch_all_market_data()
 
-    # --- Step 3: Get Binance tickers if available ---
+    # --- Step 3: Get tickers if exchange available ---
     tickers = {}
-    if binance_ok:
+    if ex_connected:
         tickers = fetch_all_tickers()
 
     # --- Step 4: Build symbol->market data lookup ---
@@ -200,9 +202,9 @@ def scan_all_coins(coins: tuple, timeframes_to_scan: tuple, include_smc: bool = 
         mkt = market_lookup.get(symbol, {})
 
         if ticker:
-            row["price"] = float(ticker.get("lastPrice", 0))
-            row["change_24h"] = float(ticker.get("priceChangePercent", 0))
-            row["volume_24h"] = float(ticker.get("quoteVolume", 0))
+            row["price"] = float(ticker.get("last", 0) or 0)
+            row["change_24h"] = float(ticker.get("change_pct", 0) or 0)
+            row["volume_24h"] = float(ticker.get("volume", 0) or 0)
         elif isinstance(mkt, pd.Series) and not mkt.empty:
             row["price"] = float(mkt.get("price", 0)) if pd.notna(mkt.get("price")) else 0
             row["change_24h"] = float(mkt.get("change_24h", 0)) if pd.notna(mkt.get("change_24h")) else 0
@@ -219,7 +221,7 @@ def scan_all_coins(coins: tuple, timeframes_to_scan: tuple, include_smc: bool = 
         klines_data = {}
         for tf in timeframes_to_scan:
             tf_interval = TIMEFRAMES.get(tf, tf)
-            df_klines = fetch_klines_cached(symbol, tf_interval, use_binance=binance_ok)
+            df_klines = fetch_klines_smart(symbol, tf_interval)
 
             if not df_klines.empty:
                 klines_data[tf] = df_klines
@@ -291,7 +293,7 @@ def scan_all_coins(coins: tuple, timeframes_to_scan: tuple, include_smc: bool = 
         scanned += 1
 
         # Rate limit: CoinGecko free = 10-30 req/min
-        if not binance_ok and idx % 5 == 0 and idx > 0:
+        if not ex_connected and idx % 5 == 0 and idx > 0:
             time.sleep(2)
         elif idx % 15 == 0 and idx > 0:
             time.sleep(0.3)
@@ -322,11 +324,11 @@ coins_to_scan = TOP_COINS[:max_coins]
 tf_to_scan = selected_timeframes if selected_timeframes else ["4h", "1D"]
 
 # Show data source status
-binance_status = check_binance_available()
-if binance_status:
-    st.caption("🟢 Data: Binance (klines) + CoinGecko (market data)")
+ex_status = get_exchange_status()
+if ex_status["connected"]:
+    st.caption(f"🟢 Data: {ex_status['active_exchange'].upper()} (OHLCV via CCXT) + CoinGecko (market data)")
 else:
-    st.caption("🟡 Data: CoinGecko only (Binance unavailable in this region)")
+    st.caption("🟡 Data: CoinGecko only (no exchange reachable)")
 
 df = scan_all_coins(
     tuple(coins_to_scan),
@@ -896,7 +898,7 @@ with tab_detail:
 st.markdown("---")
 st.markdown(
     "<div style='text-align: center; color: #555; font-size: 12px;'>"
-    "🧙‍♂️ Merlin Crypto Scanner | Data: Binance + CoinGecko | "
+    "🧙‍♂️ Merlin Crypto Scanner | Data: CCXT (Binance/Bybit/OKX/KuCoin) + CoinGecko | "
     "Not financial advice — DYOR! | "
     f"Scanning {len(coins_to_scan)} coins across {len(tf_to_scan)} timeframes"
     "</div>",
