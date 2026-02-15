@@ -17,7 +17,8 @@ from config import (
     RSI_OVERBOUGHT, RSI_OVERSOLD, RSI_STRONG_OVERBOUGHT, RSI_STRONG_OVERSOLD,
 )
 from data_fetcher import (
-    fetch_all_market_data, fetch_klines_for_coin, fetch_all_tickers,
+    fetch_all_market_data, fetch_klines_cached, fetch_all_tickers,
+    check_binance_available,
 )
 from indicators import (
     calculate_rsi, calculate_macd, calculate_volume_analysis,
@@ -123,7 +124,7 @@ with st.sidebar:
         default=["4h", "1D"],
     )
     
-    max_coins = st.slider("Number of Coins", 20, 180, 100, 10)
+    max_coins = st.slider("Number of Coins", 20, 180, 50, 10)
     
     show_smc = st.checkbox("Show Smart Money Concepts", value=True)
     show_confluence = st.checkbox("Show Confluence Scores", value=True)
@@ -152,62 +153,99 @@ with st.sidebar:
 # ============================================================
 
 @st.cache_data(ttl=180, show_spinner=False)
-def scan_all_coins(coins: list, timeframes_to_scan: list, include_smc: bool = False) -> pd.DataFrame:
+def scan_all_coins(coins: tuple, timeframes_to_scan: tuple, include_smc: bool = False) -> pd.DataFrame:
     """
     Main scanning function. Fetches data and calculates all indicators
-    for all coins. Returns a comprehensive DataFrame.
+    for all coins. Uses Binance when available, CoinGecko as fallback.
+    Returns a comprehensive DataFrame.
     """
     results = []
-    tickers = fetch_all_tickers()
-    
+
+    # --- Step 1: Check which data source is available ---
+    binance_ok = check_binance_available()
+
+    if binance_ok:
+        st.toast("✅ Binance API connected", icon="🟢")
+    else:
+        st.toast("⚠️ Binance unavailable — using CoinGecko data", icon="🟡")
+
+    # --- Step 2: Get market data from CoinGecko (always works) ---
+    market_df = fetch_all_market_data()
+
+    # --- Step 3: Get Binance tickers if available ---
+    tickers = {}
+    if binance_ok:
+        tickers = fetch_all_tickers()
+
+    # --- Step 4: Build symbol->market data lookup ---
+    market_lookup = {}
+    if not market_df.empty:
+        for _, row in market_df.iterrows():
+            sym = row.get("symbol", "").upper()
+            market_lookup[sym] = row
+
+    # --- Step 5: Scan each coin ---
+    coins_list = list(coins)
     progress_bar = st.progress(0, text="Scanning crypto market...")
-    total = len(coins)
-    
-    for idx, symbol in enumerate(coins):
+    total = len(coins_list)
+    scanned = 0
+
+    for idx, symbol in enumerate(coins_list):
         progress_bar.progress((idx + 1) / total, text=f"Scanning {symbol}... ({idx+1}/{total})")
-        
+
         row = {"symbol": symbol}
-        
-        # --- Ticker data ---
+
+        # --- Get price/change from Binance tickers OR CoinGecko ---
         ticker = tickers.get(symbol, {})
-        row["price"] = float(ticker.get("lastPrice", 0))
-        row["change_24h"] = float(ticker.get("priceChangePercent", 0))
-        row["volume_24h"] = float(ticker.get("quoteVolume", 0))
-        
+        mkt = market_lookup.get(symbol, {})
+
+        if ticker:
+            row["price"] = float(ticker.get("lastPrice", 0))
+            row["change_24h"] = float(ticker.get("priceChangePercent", 0))
+            row["volume_24h"] = float(ticker.get("quoteVolume", 0))
+        elif isinstance(mkt, pd.Series) and not mkt.empty:
+            row["price"] = float(mkt.get("price", 0)) if pd.notna(mkt.get("price")) else 0
+            row["change_24h"] = float(mkt.get("change_24h", 0)) if pd.notna(mkt.get("change_24h")) else 0
+            row["volume_24h"] = float(mkt.get("volume_24h", 0)) if pd.notna(mkt.get("volume_24h")) else 0
+        else:
+            row["price"] = 0
+            row["change_24h"] = 0
+            row["volume_24h"] = 0
+
         if row["price"] == 0:
-            continue  # Skip coins not on Binance
-        
+            continue  # Skip coins with no price data
+
         # --- RSI for each timeframe ---
         klines_data = {}
         for tf in timeframes_to_scan:
             tf_interval = TIMEFRAMES.get(tf, tf)
-            df_klines = fetch_klines_for_coin(symbol, tf_interval)
-            
+            df_klines = fetch_klines_cached(symbol, tf_interval, use_binance=binance_ok)
+
             if not df_klines.empty:
                 klines_data[tf] = df_klines
                 rsi_val = calculate_rsi(df_klines)
                 row[f"rsi_{tf}"] = rsi_val
             else:
                 row[f"rsi_{tf}"] = 50.0
-        
+
         # --- MACD (using 4h or first available) ---
-        primary_tf = "4h" if "4h" in klines_data else (timeframes_to_scan[0] if timeframes_to_scan else None)
+        primary_tf = "4h" if "4h" in klines_data else (list(timeframes_to_scan)[0] if timeframes_to_scan else None)
         if primary_tf and primary_tf in klines_data:
             macd_data = calculate_macd(klines_data[primary_tf])
             row["macd_trend"] = macd_data["trend"]
             row["macd_histogram"] = macd_data["histogram"]
-            
+
             # Volume analysis
             vol_data = calculate_volume_analysis(klines_data[primary_tf])
             row["vol_trend"] = vol_data["vol_trend"]
             row["vol_ratio"] = vol_data["vol_ratio"]
             row["obv_trend"] = vol_data["obv_trend"]
-            
+
             # Stochastic RSI
             stoch = calculate_stoch_rsi(klines_data[primary_tf])
             row["stoch_rsi_k"] = stoch["stoch_rsi_k"]
             row["stoch_rsi_d"] = stoch["stoch_rsi_d"]
-            
+
             # Smart Money Concepts
             if include_smc:
                 ob = detect_order_blocks(klines_data[primary_tf])
@@ -217,7 +255,7 @@ def scan_all_coins(coins: list, timeframes_to_scan: list, include_smc: bool = Fa
                 row["fvg_signal"] = fvg["fvg_signal"]
                 row["market_structure"] = ms["structure"]
                 row["bos"] = ms["break_of_structure"]
-            
+
             # Confluence signal
             rsi_4h = row.get("rsi_4h", row.get(f"rsi_{primary_tf}", 50))
             rsi_1d = row.get("rsi_1D", 50)
@@ -226,7 +264,7 @@ def scan_all_coins(coins: list, timeframes_to_scan: list, include_smc: bool = Fa
                 "fvg_signal": row.get("fvg_signal", "BALANCED"),
                 "structure": row.get("market_structure", "UNKNOWN"),
             } if include_smc else None
-            
+
             confluence = generate_confluence_signal(
                 rsi_4h=rsi_4h,
                 rsi_1d=rsi_1d,
@@ -239,21 +277,30 @@ def scan_all_coins(coins: list, timeframes_to_scan: list, include_smc: bool = Fa
             row["reasons"] = " | ".join(confluence["reasons"][:3])
         else:
             row["macd_trend"] = "NEUTRAL"
+            row["macd_histogram"] = 0
+            row["vol_trend"] = "—"
+            row["vol_ratio"] = 1.0
+            row["obv_trend"] = "—"
+            row["stoch_rsi_k"] = 50.0
+            row["stoch_rsi_d"] = 50.0
             row["score"] = 0
             row["recommendation"] = "WAIT"
             row["reasons"] = ""
-        
+
         results.append(row)
-        
-        # Small delay to avoid rate limits
-        if idx % 10 == 0 and idx > 0:
-            time.sleep(0.2)
-    
+        scanned += 1
+
+        # Rate limit: CoinGecko free = 10-30 req/min
+        if not binance_ok and idx % 5 == 0 and idx > 0:
+            time.sleep(2)
+        elif idx % 15 == 0 and idx > 0:
+            time.sleep(0.3)
+
     progress_bar.empty()
-    
+
     if not results:
         return pd.DataFrame()
-    
+
     return pd.DataFrame(results)
 
 
@@ -274,6 +321,13 @@ with col_h3:
 coins_to_scan = TOP_COINS[:max_coins]
 tf_to_scan = selected_timeframes if selected_timeframes else ["4h", "1D"]
 
+# Show data source status
+binance_status = check_binance_available()
+if binance_status:
+    st.caption("🟢 Data: Binance (klines) + CoinGecko (market data)")
+else:
+    st.caption("🟡 Data: CoinGecko only (Binance unavailable in this region)")
+
 df = scan_all_coins(
     tuple(coins_to_scan),
     tuple(tf_to_scan),
@@ -281,7 +335,15 @@ df = scan_all_coins(
 )
 
 if df.empty:
-    st.error("❌ No data loaded. Please check your connection and try again.")
+    st.warning(
+        "⚠️ No data loaded yet. This can happen if CoinGecko rate limits are hit. "
+        "Try reducing 'Number of Coins' to 30-50 in the sidebar, then click 'Refresh Data'."
+    )
+    st.info(
+        "💡 **Tip:** CoinGecko free API allows ~30 requests/minute. "
+        "With 50 coins × 2 timeframes = ~100 requests, it may take a moment. "
+        "The data is cached for 3 minutes after the first load."
+    )
     st.stop()
 
 # ============================================================
