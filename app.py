@@ -1,7 +1,7 @@
 """
 🧙‍♂️ Merlin Crypto Scanner
 RSI Heatmap + 24h Alerts Dashboard
-CryptoWaves-style alert logic + CCXT multi-exchange data
+CryptoWaves-style 5-status signal engine + CCXT multi-exchange
 """
 
 import time
@@ -32,39 +32,58 @@ from alerts import (
 
 
 # ============================================================
-# CryptoWaves-style ALERT LOGIC
+# 5-STATUS SIGNAL ENGINE (CryptoWaves-style)
 # ============================================================
-# Simple RSI-based: RSI 4h above threshold → SELL, below → BUY
-CW_SELL_THRESHOLD = 58   # RSI 4h >= 58 → SELL alert
-CW_BUY_THRESHOLD = 42    # RSI 4h <= 42 → BUY alert
+# Status: WAIT | CTB | BUY | CTS | SELL
+#
+# CTB  = RSI_4H crosses UP through 40 AND RSI_1D >= 35
+# BUY  = RSI_4H >= 50 AND RSI_1D >= 50 AND RSI_4H rising
+# CTS  = RSI_4H crosses DOWN through 60 AND RSI_1D <= 65
+# SELL = RSI_4H <= 45 AND RSI_1D <= 45 AND RSI_4H falling
+# WAIT = none of above
 
-
-def cw_alert_type(rsi_4h: float) -> str:
-    """CryptoWaves-style alert: pure RSI 4h threshold."""
-    if rsi_4h >= CW_SELL_THRESHOLD:
-        return "SELL"
-    elif rsi_4h <= CW_BUY_THRESHOLD:
+def compute_signal(rsi_4h: float, rsi_4h_prev: float, rsi_1d: float) -> str:
+    """CryptoWaves 5-status signal engine."""
+    # CTB: RSI_4H crossed UP through 40
+    if rsi_4h >= 40 and rsi_4h_prev < 40 and rsi_1d >= 35:
+        return "CTB"
+    # CTS: RSI_4H crossed DOWN through 60
+    if rsi_4h <= 60 and rsi_4h_prev > 60 and rsi_1d <= 65:
+        return "CTS"
+    # BUY: confirmed uptrend
+    if rsi_4h >= 50 and rsi_1d >= 50 and rsi_4h > rsi_4h_prev:
         return "BUY"
-    return "NONE"
+    # SELL: confirmed downtrend
+    if rsi_4h <= 45 and rsi_1d <= 45 and rsi_4h < rsi_4h_prev:
+        return "SELL"
+    return "WAIT"
 
 
-def cw_border_intensity(rsi_4h: float) -> float:
-    """
-    Border color intensity 0.0–1.0 based on how extreme RSI is.
-    RSI 58 → 0.3 (light), RSI 80 → 1.0 (full intensity) for SELL
-    RSI 42 → 0.3 (light), RSI 20 → 1.0 (full intensity) for BUY
-    """
-    if rsi_4h >= CW_SELL_THRESHOLD:
-        return min(1.0, 0.3 + (rsi_4h - CW_SELL_THRESHOLD) / (80 - CW_SELL_THRESHOLD) * 0.7)
-    elif rsi_4h <= CW_BUY_THRESHOLD:
-        return min(1.0, 0.3 + (CW_BUY_THRESHOLD - rsi_4h) / (CW_BUY_THRESHOLD - 20) * 0.7)
+def signal_color(sig: str) -> str:
+    return {"CTB": "#00FF7F", "BUY": "#00FF7F", "CTS": "#FF6347", "SELL": "#FF6347"}.get(sig, "#FFD700")
+
+
+def signal_is_alert(sig: str) -> bool:
+    """Only CTB/BUY/CTS/SELL are active alerts."""
+    return sig != "WAIT"
+
+
+def border_intensity(rsi_4h: float, sig: str) -> float:
+    """Border opacity: stronger for more extreme RSI values."""
+    if sig in ("CTS", "SELL"):
+        if rsi_4h >= 70: return 1.0
+        elif rsi_4h >= 60: return 0.7
+        else: return 0.45
+    elif sig in ("CTB", "BUY"):
+        if rsi_4h <= 30: return 1.0
+        elif rsi_4h <= 40: return 0.7
+        else: return 0.45
     return 0.0
 
 
 # ============================================================
 # SPARKLINE SVG
 # ============================================================
-
 def make_sparkline_svg(closes: list, width: int = 120, height: int = 36) -> str:
     if not closes or len(closes) < 3:
         return ""
@@ -113,33 +132,29 @@ st.markdown("""
     .badge-bullish { background: #00FF7F33; color: #00FF7F; }
     .badge-bearish { background: #FF634733; color: #FF6347; }
 
-    /* CW-style alert card with variable border intensity */
-    .cw-alert {
+    /* Row card used for both alerts and market cap */
+    .coin-row {
         background: #1a1a2e; border-radius: 0 10px 10px 0;
         padding: 12px 16px; margin: 5px 0;
         display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
-        border-left: 4px solid;
     }
-    .cw-alert .coin-block { min-width: 200px; flex: 1; }
-    .cw-alert .coin-name { font-size: 16px; font-weight: bold; color: white; }
-    .cw-alert .coin-full { font-size: 12px; color: #888; margin-left: 6px; }
-    .cw-alert .coin-rank { font-size: 10px; background: #2a2a4a; padding: 1px 6px; border-radius: 6px; color: #888; margin-left: 4px; }
-    .cw-alert .price-line { font-size: 12px; color: #aaa; margin-top: 2px; }
-    .cw-alert .changes { font-size: 11px; color: #888; margin-top: 2px; }
-    .cw-alert .chart-block { display: flex; gap: 12px; align-items: center; }
-    .cw-alert .chart-label { font-size: 10px; color: #666; }
-    .cw-alert .signal-block { text-align: right; min-width: 160px; }
-    .cw-alert .alert-label { font-size: 14px; font-weight: bold; }
-    .cw-alert .rsi-line { font-size: 12px; color: #888; margin-top: 2px; }
-    .cw-alert .rsi-line b { font-size: 14px; }
+    .coin-row .icon-block { width: 36px; height: 36px; border-radius: 50%; overflow: hidden; flex-shrink: 0; }
+    .coin-row .icon-block img { width: 36px; height: 36px; }
+    .coin-row .info-block { min-width: 180px; flex: 1; }
+    .coin-row .coin-name { font-size: 15px; font-weight: bold; color: white; }
+    .coin-row .coin-full { font-size: 11px; color: #888; margin-left: 4px; }
+    .coin-row .coin-rank { font-size: 10px; background: #2a2a4a; padding: 1px 6px; border-radius: 6px; color: #888; margin-left: 4px; }
+    .coin-row .price-line { font-size: 12px; color: #aaa; margin-top: 2px; }
+    .coin-row .changes { font-size: 11px; color: #888; margin-top: 2px; }
+    .coin-row .chart-block { display: flex; gap: 12px; align-items: center; }
+    .coin-row .chart-label { font-size: 10px; color: #666; }
+    .coin-row .signal-block { text-align: right; min-width: 150px; }
+    .coin-row .signal-label { font-size: 15px; font-weight: bold; }
+    .coin-row .rsi-line { font-size: 12px; color: #888; margin-top: 2px; }
+    .coin-row .rsi-line b { font-size: 14px; }
 
     .change-pos { color: #00FF7F; }
     .change-neg { color: #FF6347; }
-
-    .market-row {
-        background: #1a1a2e; border-radius: 10px; padding: 12px 16px; margin: 4px 0;
-        display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px;
-    }
 
     .stTabs [data-baseweb="tab-list"] { gap: 4px; }
     .stTabs [data-baseweb="tab"] { border-radius: 8px; padding: 8px 16px; font-weight: 600; }
@@ -150,9 +165,9 @@ st.markdown("""
 
     @media (max-width: 768px) {
         .block-container { padding: 0.5rem; }
-        .cw-alert .chart-block { display: none; }
-        .cw-alert .coin-block { min-width: 140px; }
-        .cw-alert .signal-block { min-width: 120px; }
+        .coin-row .chart-block { display: none; }
+        .coin-row .info-block { min-width: 130px; }
+        .coin-row .signal-block { min-width: 110px; }
     }
 </style>
 """, unsafe_allow_html=True)
@@ -164,7 +179,6 @@ st.markdown("""
 with st.sidebar:
     st.markdown("## 🧙‍♂️ Settings")
     st.markdown("---")
-
     coin_list_mode = st.radio("📋 Coin List", ["CryptoWaves (107)", "Top 100 Dynamic", "Extended (180+)"], index=0)
     if coin_list_mode == "CryptoWaves (107)":
         coin_source = CRYPTOWAVES_COINS
@@ -172,18 +186,15 @@ with st.sidebar:
         coin_source = CRYPTOWAVES_COINS[:50]
     else:
         coin_source = TOP_COINS_EXTENDED
-
     max_coins = st.slider("Max Coins", 20, 180, min(len(coin_source), 80), 10)
     st.markdown("---")
     selected_timeframes = st.multiselect("Timeframes", list(TIMEFRAMES.keys()), default=["4h", "1D"])
     show_smc = st.checkbox("Smart Money Concepts", value=False)
-
     st.markdown("---")
     st.markdown("### 📱 Telegram")
     telegram_token = st.text_input("Bot Token", type="password", key="tg_token")
     telegram_chat_id = st.text_input("Chat ID", key="tg_chat")
     alert_min_score = st.slider("Min. Score", 10, 80, 30, 5)
-
     st.markdown("---")
     if st.button("🔄 Refresh", use_container_width=True):
         st.cache_data.clear()
@@ -199,7 +210,6 @@ with st.sidebar:
 # ============================================================
 # SCAN FUNCTION
 # ============================================================
-
 @st.cache_data(ttl=180, show_spinner="🧙‍♂️ Scanning crypto market...")
 def scan_all_coins(coins: tuple, timeframes_to_scan: tuple, include_smc: bool = False) -> pd.DataFrame:
     results = []
@@ -232,18 +242,19 @@ def scan_all_coins(coins: tuple, timeframes_to_scan: tuple, include_smc: bool = 
         if isinstance(mkt, pd.Series) and not mkt.empty:
             row["rank"] = int(mkt.get("rank", 999)) if pd.notna(mkt.get("rank")) else 999
             row["coin_name"] = str(mkt.get("name", symbol)) if pd.notna(mkt.get("name")) else symbol
+            row["coin_image"] = str(mkt.get("image", "")) if pd.notna(mkt.get("image")) else ""
             row["change_1h"] = float(mkt.get("change_1h", 0)) if pd.notna(mkt.get("change_1h")) else 0
             row["change_7d"] = float(mkt.get("change_7d", 0)) if pd.notna(mkt.get("change_7d")) else 0
             row["change_30d"] = float(mkt.get("change_30d", 0)) if pd.notna(mkt.get("change_30d")) else 0
             row["market_cap"] = float(mkt.get("market_cap", 0)) if pd.notna(mkt.get("market_cap")) else 0
         else:
-            row["rank"], row["coin_name"] = 999, symbol
+            row["rank"], row["coin_name"], row["coin_image"] = 999, symbol, ""
             row["change_1h"], row["change_7d"], row["change_30d"], row["market_cap"] = 0, 0, 0, 0
 
         if row["price"] == 0:
             continue
 
-        # RSI + sparkline data per timeframe
+        # RSI + sparkline per timeframe
         klines_data = {}
         for tf in timeframes_to_scan:
             tf_interval = TIMEFRAMES.get(tf, tf)
@@ -254,8 +265,7 @@ def scan_all_coins(coins: tuple, timeframes_to_scan: tuple, include_smc: bool = 
                 rsi_s = RSIIndicator(close=df_kl["close"], window=14).rsi().dropna()
                 if len(rsi_s) >= 2:
                     row[f"rsi_{tf}"] = round(float(rsi_s.iloc[-1]), 2)
-                    prev_idx = max(-5, -len(rsi_s))
-                    row[f"rsi_prev_{tf}"] = round(float(rsi_s.iloc[prev_idx]), 2)
+                    row[f"rsi_prev_{tf}"] = round(float(rsi_s.iloc[-2]), 2)
                 else:
                     row[f"rsi_{tf}"], row[f"rsi_prev_{tf}"] = 50.0, 50.0
                 row[f"closes_{tf}"] = json.dumps([round(c, 6) for c in df_kl["close"].tail(20).tolist()])
@@ -263,12 +273,15 @@ def scan_all_coins(coins: tuple, timeframes_to_scan: tuple, include_smc: bool = 
                 row[f"rsi_{tf}"], row[f"rsi_prev_{tf}"] = 50.0, 50.0
                 row[f"closes_{tf}"] = "[]"
 
-        # --- CryptoWaves-style alert (simple RSI 4h threshold) ---
-        rsi_4h_val = row.get("rsi_4h", 50.0)
-        row["cw_alert"] = cw_alert_type(rsi_4h_val)
-        row["cw_intensity"] = cw_border_intensity(rsi_4h_val)
+        # 5-STATUS SIGNAL
+        rsi_4h = row.get("rsi_4h", 50.0)
+        rsi_4h_prev = row.get("rsi_prev_4h", 50.0)
+        rsi_1d = row.get("rsi_1D", 50.0)
+        row["signal"] = compute_signal(rsi_4h, rsi_4h_prev, rsi_1d)
+        row["signal_color"] = signal_color(row["signal"])
+        row["border_intensity"] = border_intensity(rsi_4h, row["signal"])
 
-        # --- Additional indicators (for Confluence tab) ---
+        # Additional indicators for Confluence tab
         primary_tf = "4h" if "4h" in klines_data else (list(timeframes_to_scan)[0] if timeframes_to_scan else None)
         if primary_tf and primary_tf in klines_data:
             macd_data = calculate_macd(klines_data[primary_tf])
@@ -281,7 +294,6 @@ def scan_all_coins(coins: tuple, timeframes_to_scan: tuple, include_smc: bool = 
             stoch = calculate_stoch_rsi(klines_data[primary_tf])
             row["stoch_rsi_k"] = stoch["stoch_rsi_k"]
             row["stoch_rsi_d"] = stoch["stoch_rsi_d"]
-
             if include_smc:
                 ob = detect_order_blocks(klines_data[primary_tf])
                 fvg = detect_fair_value_gaps(klines_data[primary_tf])
@@ -290,9 +302,6 @@ def scan_all_coins(coins: tuple, timeframes_to_scan: tuple, include_smc: bool = 
                 row["fvg_signal"] = fvg["fvg_signal"]
                 row["market_structure"] = ms["structure"]
                 row["bos"] = ms["break_of_structure"]
-
-            rsi_4h = row.get("rsi_4h", 50)
-            rsi_1d = row.get("rsi_1D", 50)
             smc_c = {"ob_signal": row.get("ob_signal", "NONE"), "fvg_signal": row.get("fvg_signal", "BALANCED"),
                      "structure": row.get("market_structure", "UNKNOWN")} if include_smc else None
             conf = generate_confluence_signal(rsi_4h=rsi_4h, rsi_1d=rsi_1d, macd_data=macd_data, volume_data=vol_data, smc_data=smc_c)
@@ -305,7 +314,6 @@ def scan_all_coins(coins: tuple, timeframes_to_scan: tuple, include_smc: bool = 
                         "score": 0, "confluence_rec": "WAIT", "reasons": ""})
 
         results.append(row)
-
         if not ex_connected and idx % 5 == 0 and idx > 0:
             time.sleep(2)
         elif idx % 15 == 0 and idx > 0:
@@ -322,24 +330,108 @@ tf_to_scan = selected_timeframes if selected_timeframes else ["4h", "1D"]
 df = scan_all_coins(tuple(coins_to_scan), tuple(tf_to_scan), include_smc=show_smc)
 
 if df.empty:
-    st.warning("⚠️ No data. Reduce coins to 30–50 and click Refresh.")
+    st.warning("⚠️ No data. Reduce coins and Refresh.")
     st.stop()
 
+# ============================================================
+# HELPERS
+# ============================================================
+def ch_cls(v): return "change-pos" if v >= 0 else "change-neg"
+
+def fmt_price(p):
+    if p >= 1000: return f"${p:,.2f}"
+    elif p >= 1: return f"${p:,.4f}"
+    elif p >= 0.001: return f"${p:,.6f}"
+    else: return f"${p:.8f}"
+
+def coin_icon_html(img_url, size=36):
+    if img_url:
+        return f'<img src="{img_url}" width="{size}" height="{size}" style="border-radius:50%;">'
+    return f'<div style="width:{size}px;height:{size}px;border-radius:50%;background:#2a2a4a;"></div>'
+
+def rsi_color(val):
+    if val > 70: return "#FF6347"
+    elif val < 30: return "#00FF7F"
+    return "white"
+
+def build_coin_row_html(row, show_charts=True, show_border=True):
+    """Reusable HTML for one coin row (used in Alerts + Market Cap)."""
+    sig = row.get("signal", "WAIT")
+    sc = signal_color(sig)
+    intensity = row.get("border_intensity", 0)
+
+    if show_border and sig != "WAIT":
+        if sig in ("CTS", "SELL"):
+            border = f"border-left: 6px solid rgba(255, 80, 80, {max(intensity, 0.35):.2f});"
+        else:
+            border = f"border-left: 6px solid rgba(0, 255, 140, {max(intensity, 0.35):.2f});"
+    else:
+        border = "border-left: 6px solid transparent;"
+
+    sym = row["symbol"]
+    name = row.get("coin_name", sym)
+    rank = row.get("rank", 999)
+    rk = f"#{int(rank)}" if rank < 999 else ""
+    img = row.get("coin_image", "")
+    rsi4 = row.get("rsi_4h", 50)
+    rsi1d = row.get("rsi_1D", 50)
+    ch1h = row.get("change_1h", 0)
+    ch24h = row.get("change_24h", 0)
+    ch7d = row.get("change_7d", 0)
+    ch30d = row.get("change_30d", 0)
+
+    # Sparklines
+    chart_html = ""
+    if show_charts:
+        try: s7 = make_sparkline_svg(json.loads(row.get("closes_4h", "[]")), 100, 32)
+        except: s7 = ""
+        try: s30 = make_sparkline_svg(json.loads(row.get("closes_1D", "[]")), 100, 32)
+        except: s30 = ""
+        chart_html = f"""
+        <div class="chart-block">
+            <div><div class="chart-label">● 7d</div>{s7}</div>
+            <div><div class="chart-label">● 30d</div>{s30}</div>
+        </div>"""
+
+    return f"""
+    <div class="coin-row" style="{border}">
+        <div class="icon-block">{coin_icon_html(img)}</div>
+        <div class="info-block">
+            <div>
+                <span class="coin-name">{sym}</span>
+                <span class="coin-full">{name}</span>
+                <span class="coin-rank">{rk}</span>
+            </div>
+            <div class="price-line">Price: <b style="color:white;">{fmt_price(row['price'])}</b></div>
+            <div class="changes">
+                Ch%:
+                <span class="{ch_cls(ch1h)}">{ch1h:+.2f}%</span>
+                <span class="{ch_cls(ch24h)}">{ch24h:+.2f}%</span>
+                <span class="{ch_cls(ch7d)}" style="font-weight:bold;">{ch7d:+.2f}%</span>
+                <span class="{ch_cls(ch30d)}">{ch30d:+.2f}%</span>
+            </div>
+        </div>
+        {chart_html}
+        <div class="signal-block">
+            <span style="font-size:12px;color:#888;">Now:</span>
+            <span class="signal-label" style="color: {sc};">{sig}</span>
+            <div class="rsi-line">RSI (4h): <b style="color:{rsi_color(rsi4)};">{rsi4:.2f}</b></div>
+            <div class="rsi-line">RSI (1D): <b style="color:{rsi_color(rsi1d)};">{rsi1d:.2f}</b></div>
+        </div>
+    </div>"""
+
 
 # ============================================================
-# HEADER BAR
+# HEADER
 # ============================================================
 avg_rsi_4h = df["rsi_4h"].mean() if "rsi_4h" in df.columns else 50
-sell_alerts = len(df[df["cw_alert"] == "SELL"]) if "cw_alert" in df.columns else 0
-buy_alerts = len(df[df["cw_alert"] == "BUY"]) if "cw_alert" in df.columns else 0
-wait_count = len(df) - sell_alerts - buy_alerts
+sell_count = len(df[df["signal"].isin(["CTS", "SELL"])]) if "signal" in df.columns else 0
+buy_count = len(df[df["signal"].isin(["CTB", "BUY"])]) if "signal" in df.columns else 0
+wait_count = len(df) - sell_count - buy_count
 
-if avg_rsi_4h >= 60:
-    market_label, badge_cls = "BULLISH", "badge-bullish"
-elif avg_rsi_4h >= 45:
-    market_label, badge_cls = "NEUTRAL", "badge-neutral"
-else:
-    market_label, badge_cls = "BEARISH", "badge-bearish"
+if avg_rsi_4h >= 60: ml, bc = "BULLISH", "badge-bullish"
+elif avg_rsi_4h >= 45: ml, bc = "NEUTRAL", "badge-neutral"
+else: ml, bc = "BEARISH", "badge-bearish"
 
 avg_ch1h = df["change_1h"].mean() if "change_1h" in df.columns else 0
 avg_ch24h = df["change_24h"].mean()
@@ -348,13 +440,11 @@ avg_ch30d = df["change_30d"].mean() if "change_30d" in df.columns else 0
 ex_status = get_exchange_status()
 ex_name = ex_status["active_exchange"].upper() if ex_status["connected"] else "CoinGecko"
 
-def ch_cls(v): return "change-pos" if v >= 0 else "change-neg"
-
 st.markdown(f"""
 <div class="header-bar">
     <div>
         <span class="header-title">🧙‍♂️ Merlin Crypto Scanner</span>
-        <span class="badge {badge_cls}">Market: {market_label}</span>
+        <span class="badge {bc}">Market: {ml}</span>
     </div>
     <div class="header-stat">
         Avg RSI (4h): <b>{avg_rsi_4h:.2f}</b> |
@@ -364,9 +454,9 @@ st.markdown(f"""
         <span class="{ch_cls(avg_ch30d)}">{avg_ch30d:+.2f}%</span>
     </div>
     <div class="header-stat">
-        <span style="color:#FF6347;">🔴 {sell_alerts}</span>
+        <span style="color:#FF6347;">🔴 {sell_count}</span>
         <span style="color:#FFD700;">🟡 {wait_count}</span>
-        <span style="color:#00FF7F;">🟢 {buy_alerts}</span>
+        <span style="color:#00FF7F;">🟢 {buy_count}</span>
         | 📡 {ex_name}
     </div>
 </div>
@@ -376,39 +466,14 @@ st.markdown(f"""
 # ============================================================
 # TABS
 # ============================================================
-total_alerts = sell_alerts + buy_alerts
+total_alerts = sell_count + buy_count
 tab_alerts, tab_heatmap, tab_market, tab_confluence, tab_detail = st.tabs([
-    f"🚨 24h Alerts {sell_alerts} 🔴 {buy_alerts} 🟢",
+    f"🚨 24h Alerts {sell_count}🔴 {buy_count}🟢",
     "🔥 RSI Heatmap",
     "📊 By Market Cap",
     "🎯 Confluence",
     "🔍 Detail",
 ])
-
-
-# ============================================================
-# HELPER: Format price
-# ============================================================
-def fmt_price(p):
-    if p >= 1000: return f"${p:,.2f}"
-    elif p >= 1: return f"${p:,.4f}"
-    elif p >= 0.001: return f"${p:,.6f}"
-    else: return f"${p:.8f}"
-
-
-# ============================================================
-# HELPER: TradingView chart iframe
-# ============================================================
-def tradingview_chart(symbol: str, interval: str = "240"):
-    """Generate TradingView advanced chart widget HTML."""
-    pair = f"BINANCE:{symbol}USDT"
-    return f"""
-    <div style="height: 500px; background: #131722; border-radius: 8px; overflow: hidden;">
-        <iframe src="https://s.tradingview.com/widgetembed/?frameElementId=tv_chart&symbol={pair}&interval={interval}&hidesidetoolbar=0&symboledit=1&saveimage=0&toolbarbg=131722&studies=%5B%22RSI%40tv-basicstudies%22%5D&theme=dark&style=1&timezone=Etc%2FUTC&withdateranges=1&showpopupbutton=0&studies_overrides=%7B%7D&overrides=%7B%7D&enabled_features=%5B%5D&disabled_features=%5B%5D&locale=en&utm_source=merlin&utm_medium=widget&utm_campaign=chart" 
-            style="width: 100%; height: 500px; border: none;">
-        </iframe>
-    </div>
-    """
 
 
 # ============================================================
@@ -419,9 +484,10 @@ with tab_alerts:
     with col_t:
         st.markdown("### 🚨 24h Alerts")
     with col_s:
-        alert_sort = st.selectbox("Sort:", ["Alert Time", "RSI (4h)", "RSI (1D)", "Rank"], key="asort", label_visibility="collapsed")
+        alert_sort = st.selectbox("Sort:", ["Signal Strength", "RSI (4h)", "RSI (1D)", "Rank"],
+                                  key="asort", label_visibility="collapsed")
 
-    alert_df = df[df["cw_alert"] != "NONE"].copy()
+    alert_df = df[df["signal"] != "WAIT"].copy()
 
     if alert_sort == "RSI (4h)" and "rsi_4h" in alert_df.columns:
         alert_df = alert_df.sort_values("rsi_4h", ascending=False)
@@ -430,114 +496,30 @@ with tab_alerts:
     elif alert_sort == "Rank":
         alert_df = alert_df.sort_values("rank")
     else:
-        # Default: SELL first (highest RSI first), then BUY (lowest RSI first)
-        sell_part = alert_df[alert_df["cw_alert"] == "SELL"].sort_values("rsi_4h", ascending=False)
-        buy_part = alert_df[alert_df["cw_alert"] == "BUY"].sort_values("rsi_4h", ascending=True)
-        alert_df = pd.concat([sell_part, buy_part])
+        # Sell signals first (highest RSI), then buy (lowest RSI)
+        sell_p = alert_df[alert_df["signal"].isin(["CTS", "SELL"])].sort_values("rsi_4h", ascending=False)
+        buy_p = alert_df[alert_df["signal"].isin(["CTB", "BUY"])].sort_values("rsi_4h", ascending=True)
+        alert_df = pd.concat([sell_p, buy_p])
 
     if alert_df.empty:
-        st.info("No active alerts — all coins in neutral RSI zone (42–58).")
+        st.info("No active alerts — all coins in neutral zone.")
     else:
-        st.caption(f"**{len(alert_df)}** active signals | 🔴 {sell_alerts} SELL  🟢 {buy_alerts} BUY")
-
-        for _, row in alert_df.head(50).iterrows():
-            cw = row["cw_alert"]
-            is_buy = cw == "BUY"
-            intensity = row.get("cw_intensity", 0.5)
-
-            # Dynamic border color with intensity
-            if is_buy:
-                border_rgba = f"rgba(0, 255, 127, {intensity:.2f})"
-                alert_label_color = "#00FF7F"
-            else:
-                border_rgba = f"rgba(255, 99, 71, {intensity:.2f})"
-                alert_label_color = "#FF6347"
-
-            sym = row["symbol"]
-            name = row.get("coin_name", sym)
-            rank = row.get("rank", 999)
-            rank_str = f"#{int(rank)}" if rank < 999 else ""
-
-            rsi4 = row.get("rsi_4h", 50)
-            rsi1d = row.get("rsi_1D", 50)
-            r4c = "#FF6347" if rsi4 > 70 else "#00FF7F" if rsi4 < 30 else "white"
-            r1c = "#FF6347" if rsi1d > 70 else "#00FF7F" if rsi1d < 30 else "white"
-
-            ch1h = row.get("change_1h", 0)
-            ch24h = row.get("change_24h", 0)
-            ch7d = row.get("change_7d", 0)
-            ch30d = row.get("change_30d", 0)
-
-            # Sparklines
-            try: spark_7d = make_sparkline_svg(json.loads(row.get("closes_4h", "[]")), 100, 32)
-            except Exception: spark_7d = ""
-            try: spark_30d = make_sparkline_svg(json.loads(row.get("closes_1D", "[]")), 100, 32)
-            except Exception: spark_30d = ""
-
-            st.markdown(f"""
-            <div class="cw-alert" style="border-left: 4px solid {border_rgba};">
-                <div class="coin-block">
-                    <div>
-                        <span class="coin-name">{sym}</span>
-                        <span class="coin-full">{name}</span>
-                        <span class="coin-rank">{rank_str}</span>
-                    </div>
-                    <div class="price-line">Price: <b style="color:white;">{fmt_price(row['price'])}</b></div>
-                    <div class="changes">
-                        Ch%:
-                        <span class="{ch_cls(ch1h)}">{ch1h:+.2f}%</span>
-                        <span class="{ch_cls(ch24h)}">{ch24h:+.2f}%</span>
-                        <span class="{ch_cls(ch7d)}" style="font-weight:bold;">{ch7d:+.2f}%</span>
-                        <span class="{ch_cls(ch30d)}">{ch30d:+.2f}%</span>
-                    </div>
-                </div>
-                <div class="chart-block">
-                    <div><div class="chart-label">● 7d</div>{spark_7d}</div>
-                    <div><div class="chart-label">● 30d</div>{spark_30d}</div>
-                </div>
-                <div class="signal-block">
-                    <span class="alert-label" style="color: {alert_label_color};">Alert: {cw}</span>
-                    <div class="rsi-line">RSI (4h): <b style="color:{r4c};">{rsi4:.2f}</b></div>
-                    <div class="rsi-line">RSI (1D): <b style="color:{r1c};">{rsi1d:.2f}</b></div>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-
-            # Clickable: show TradingView chart
-            if st.button(f"📈 Chart {sym}", key=f"chart_{sym}", help=f"Open {sym} chart"):
-                st.session_state["chart_coin"] = sym
+        st.caption(f"**{len(alert_df)}** active signals | 🔴 {sell_count} CTS/SELL  🟢 {buy_count} CTB/BUY")
+        for _, row in alert_df.head(60).iterrows():
+            st.markdown(build_coin_row_html(row, show_charts=True, show_border=True), unsafe_allow_html=True)
 
     # Show TradingView chart if coin selected
-    if st.session_state.get("chart_coin"):
-        coin_sym = st.session_state["chart_coin"]
-        coin_data = df[df["symbol"] == coin_sym]
-        if not coin_data.empty:
-            cr = coin_data.iloc[0]
-            cw = cr.get("cw_alert", "NONE")
-            sig_color = "#FF6347" if cw == "SELL" else "#00FF7F" if cw == "BUY" else "#FFD700"
-
-            st.markdown(f"""
-            <div style="background:#1a1a2e;border-radius:10px;padding:14px;margin:10px 0;">
-                <div style="display:flex;flex-wrap:wrap;align-items:center;gap:12px;">
-                    <b style="color:white;font-size:18px;">{coin_sym}</b>
-                    <span style="color:#888;">{cr.get('coin_name', coin_sym)}</span>
-                    <span class="coin-rank">#{int(cr.get('rank',999))}</span>
-                    <span style="color:white;">Price: {fmt_price(cr['price'])}</span>
-                    <span class="{ch_cls(cr.get('change_24h',0))}">{cr.get('change_24h',0):+.2f}%</span>
-                    <span style="color:{sig_color};font-weight:bold;">Now: {cw}</span>
-                    <span style="color:#888;">RSI (4h): <b style="color:{'#FF6347' if cr.get('rsi_4h',50)>70 else '#00FF7F' if cr.get('rsi_4h',50)<30 else 'white'};">{cr.get('rsi_4h',50):.2f}</b></span>
-                    <span style="color:#888;">RSI (1D): <b>{cr.get('rsi_1D',50):.2f}</b></span>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-
-            st.components.v1.html(tradingview_chart(coin_sym), height=520)
-
-        if st.button("✖ Close Chart"):
-            del st.session_state["chart_coin"]
+    if st.session_state.get("chart_coin_alert"):
+        csym = st.session_state["chart_coin_alert"]
+        pair = f"BINANCE:{csym}USDT"
+        st.components.v1.html(f"""
+        <div style="height:500px;background:#131722;border-radius:8px;overflow:hidden;">
+        <iframe src="https://s.tradingview.com/widgetembed/?symbol={pair}&interval=240&hidesidetoolbar=0&symboledit=1&saveimage=0&toolbarbg=131722&studies=%5B%22RSI%40tv-basicstudies%22%5D&theme=dark&style=1&timezone=Etc%2FUTC&withdateranges=1" style="width:100%;height:500px;border:none;"></iframe></div>
+        """, height=520)
+        if st.button("✖ Close Chart", key="close_alert_chart"):
+            del st.session_state["chart_coin_alert"]
             st.rerun()
 
-    # Telegram
     if st.session_state.get("send_summary") and telegram_token and telegram_chat_id:
         check_and_send_alerts(alert_df.to_dict("records"), telegram_token, telegram_chat_id, alert_min_score, send_summary=True)
         st.success("✅ Sent!")
@@ -548,39 +530,34 @@ with tab_alerts:
 # TAB 2: RSI HEATMAP
 # ============================================================
 with tab_heatmap:
-    hm_col1, hm_col2 = st.columns([3, 1])
-    with hm_col1:
+    hm_c1, hm_c2 = st.columns([3, 1])
+    with hm_c1:
         heatmap_tf = st.selectbox("Timeframe", tf_to_scan, index=0, key="heatmap_tf")
-    with hm_col2:
+    with hm_c2:
         hm_xaxis = st.selectbox("X-Axis", ["Random Spread", "Coin Rank"], index=0, key="hm_xaxis")
 
     rsi_col = f"rsi_{heatmap_tf}"
     rsi_prev_col = f"rsi_prev_{heatmap_tf}"
 
     if rsi_col in df.columns:
-        avail = ["symbol", rsi_col, "price", "change_24h", "volume_24h", "cw_alert",
-                 "rank", "coin_name", "change_1h", "change_7d", "change_30d"]
-        if rsi_prev_col in df.columns: avail.append(rsi_prev_col)
-        other_rsi = "rsi_1D" if heatmap_tf == "4h" else "rsi_4h"
-        if other_rsi in df.columns: avail.append(other_rsi)
-        avail = [c for c in avail if c in df.columns]
+        avail = [c for c in ["symbol", rsi_col, "price", "change_24h", "signal",
+                             "rank", "coin_name", "change_1h", "change_7d", "change_30d", rsi_prev_col,
+                             "rsi_1D" if heatmap_tf == "4h" else "rsi_4h"] if c in df.columns]
         plot_df = df[avail].copy().dropna(subset=[rsi_col])
 
-        # X-axis: rank or random
         if hm_xaxis == "Coin Rank":
             plot_df["x_pos"] = plot_df["rank"].clip(upper=200)
         else:
             np.random.seed(42)
             plot_df["x_pos"] = np.random.uniform(0, 100, len(plot_df))
 
-        # DOT COLOR: gray by default, colored only if has CW alert
-        def dot_color(cw):
-            if cw == "SELL": return "#FF6347"
-            elif cw == "BUY": return "#00FF7F"
+        # Color: gray=WAIT, red=CTS/SELL, green=CTB/BUY
+        def dot_c(sig):
+            if sig in ("CTS", "SELL"): return "#FF6347"
+            elif sig in ("CTB", "BUY"): return "#00FF7F"
             return "#888888"
-        plot_df["dot_color"] = plot_df["cw_alert"].apply(dot_color)
+        plot_df["dot_color"] = plot_df["signal"].apply(dot_c)
 
-        # RSI delta for trend lines
         if rsi_prev_col in plot_df.columns:
             plot_df["rsi_delta"] = plot_df[rsi_col] - plot_df[rsi_prev_col]
         else:
@@ -588,12 +565,11 @@ with tab_heatmap:
 
         fig = go.Figure()
 
-        # RSI zones
+        # Zones
         fig.add_hrect(y0=80, y1=100, fillcolor="rgba(255,0,0,0.12)", line_width=0,
                       annotation_text="OVERBOUGHT", annotation_position="top right", annotation_font_color="#FF6347")
         fig.add_hrect(y0=70, y1=80, fillcolor="rgba(255,99,71,0.06)", line_width=0,
                       annotation_text="STRONG", annotation_position="top right", annotation_font_color="rgba(255,99,71,0.5)")
-        fig.add_hrect(y0=60, y1=70, fillcolor="rgba(255,215,0,0.03)", line_width=0)
         fig.add_hrect(y0=30, y1=40, fillcolor="rgba(50,205,50,0.06)", line_width=0,
                       annotation_text="WEAK", annotation_position="bottom right", annotation_font_color="rgba(0,255,127,0.5)")
         fig.add_hrect(y0=0, y1=30, fillcolor="rgba(0,255,127,0.12)", line_width=0,
@@ -601,39 +577,35 @@ with tab_heatmap:
 
         fig.add_hline(y=70, line_dash="dash", line_color="rgba(255,99,71,0.5)", line_width=1)
         fig.add_hline(y=60, line_dash="dash", line_color="rgba(255,99,71,0.25)", line_width=0.5)
-        fig.add_hline(y=30, line_dash="dash", line_color="rgba(0,255,127,0.5)", line_width=1)
         fig.add_hline(y=40, line_dash="dash", line_color="rgba(0,255,127,0.25)", line_width=0.5)
+        fig.add_hline(y=30, line_dash="dash", line_color="rgba(0,255,127,0.5)", line_width=1)
         fig.add_hline(y=50, line_dash="dot", line_color="rgba(255,255,255,0.15)", line_width=1)
 
-        # Trend lines (RSI momentum indicator)
+        # Trend lines
         for _, r in plot_df.iterrows():
-            delta = r.get("rsi_delta", 0)
-            if abs(delta) > 0.5:
-                lc = "rgba(255,99,71,0.35)" if delta < 0 else "rgba(0,255,127,0.35)"
-                fig.add_trace(go.Scatter(
-                    x=[r["x_pos"], r["x_pos"]], y=[r[rsi_col] - delta, r[rsi_col]],
-                    mode="lines", line=dict(color=lc, width=1, dash="dot"),
-                    hoverinfo="skip", showlegend=False))
+            d = r.get("rsi_delta", 0)
+            if abs(d) > 0.5:
+                lc = "rgba(255,99,71,0.35)" if d < 0 else "rgba(0,255,127,0.35)"
+                fig.add_trace(go.Scatter(x=[r["x_pos"], r["x_pos"]], y=[r[rsi_col] - d, r[rsi_col]],
+                    mode="lines", line=dict(color=lc, width=1, dash="dot"), hoverinfo="skip", showlegend=False))
 
-        # Build hover data
+        # Hover data
+        other_rsi = "rsi_1D" if heatmap_tf == "4h" else "rsi_4h"
+        other_tf = "1D" if heatmap_tf == "4h" else "4h"
         custom = []
         for _, r in plot_df.iterrows():
             rk = f"#{int(r.get('rank',999))}" if r.get('rank',999) < 999 else ""
             o_rsi = r.get(other_rsi, 50) if other_rsi in plot_df.columns else 50
-            o_tf = "1D" if heatmap_tf == "4h" else "4h"
-            cw = r.get("cw_alert", "NONE")
-            alert_str = f"{cw}" if cw != "NONE" else "none for 24 hours"
+            sig = r.get("signal", "WAIT")
+            alert_str = f"{sig}" if sig != "WAIT" else "none for 24 hours"
             custom.append([r["price"], r.get("coin_name", r["symbol"]), rk,
-                           r[rsi_col], o_rsi, o_tf,
+                           r[rsi_col], o_rsi, other_tf,
                            r.get("change_1h", 0), r.get("change_24h", 0),
                            r.get("change_7d", 0), r.get("change_30d", 0), alert_str])
 
         fig.add_trace(go.Scatter(
-            x=plot_df["x_pos"], y=plot_df[rsi_col],
-            mode="markers+text",
-            text=plot_df["symbol"],
-            textposition="top center",
-            textfont=dict(size=9, color="white"),
+            x=plot_df["x_pos"], y=plot_df[rsi_col], mode="markers+text",
+            text=plot_df["symbol"], textposition="top center", textfont=dict(size=9, color="white"),
             marker=dict(size=10, color=plot_df["dot_color"], opacity=0.9,
                         line=dict(width=1, color="rgba(255,255,255,0.3)")),
             customdata=custom,
@@ -642,9 +614,7 @@ with tab_heatmap:
                 f"RSI ({heatmap_tf}): " + "%{customdata[3]:.2f} | RSI (%{customdata[5]}): %{customdata[4]:.2f}<br>"
                 "Price: $%{customdata[0]:,.4f}<br>"
                 "1h, 24h, 7d, 30d: %{customdata[6]:+.2f}%, %{customdata[7]:+.2f}%, %{customdata[8]:+.2f}%, %{customdata[9]:+.2f}%<br>"
-                "Latest Alert: %{customdata[10]}<br>"
-                "<extra></extra>"),
-        ))
+                "Latest Alert: %{customdata[10]}<br><extra></extra>")))
 
         avg_val = plot_df[rsi_col].mean()
         fig.add_hline(y=avg_val, line_dash="dashdot", line_color="rgba(255,215,0,0.6)", line_width=1.5,
@@ -678,7 +648,7 @@ with tab_heatmap:
 
 
 # ============================================================
-# TAB 3: BY MARKET CAP
+# TAB 3: BY MARKET CAP (with sparklines + icons + signals)
 # ============================================================
 with tab_market:
     sort_market = st.selectbox("Sort:", ["Rank", "1h", "24h", "7d", "30d", "RSI (4h)", "RSI (1D)"], key="msort")
@@ -691,49 +661,17 @@ with tab_market:
         display_df = display_df.sort_values(sc, ascending=sa)
 
     for _, row in display_df.iterrows():
-        sym, name = row["symbol"], row.get("coin_name", row["symbol"])
-        rank = row.get("rank", 999)
-        rk = f"#{int(rank)}" if rank < 999 else ""
-        rsi4 = row.get("rsi_4h", 50)
-        rsi1d = row.get("rsi_1D", 50)
-        cw = row.get("cw_alert", "NONE")
-        sig_color = "#FF6347" if cw == "SELL" else "#00FF7F" if cw == "BUY" else "#FFD700"
-        sig_label = cw if cw != "NONE" else "WAIT"
-        r4c = "#FF6347" if rsi4 > 70 else "#00FF7F" if rsi4 < 30 else "white"
-        r1c = "#FF6347" if rsi1d > 70 else "#00FF7F" if rsi1d < 30 else "white"
-        ch1h, ch24h = row.get("change_1h", 0), row.get("change_24h", 0)
-        ch7d, ch30d = row.get("change_7d", 0), row.get("change_30d", 0)
-
-        st.markdown(f"""
-        <div class="market-row">
-            <div style="min-width:180px;">
-                <span style="font-size:15px;font-weight:bold;color:white;">{sym}</span>
-                <span style="font-size:12px;color:#888;">{name}</span>
-                <span class="coin-rank">{rk}</span><br>
-                <span style="font-size:12px;color:#aaa;">Price: {fmt_price(row['price'])}</span><br>
-                <span style="font-size:11px;color:#888;">Ch%:
-                    <span class="{ch_cls(ch1h)}">{ch1h:+.2f}%</span>
-                    <span class="{ch_cls(ch24h)}">{ch24h:+.2f}%</span>
-                    <span class="{ch_cls(ch7d)}" style="font-weight:bold;">{ch7d:+.2f}%</span>
-                    <span class="{ch_cls(ch30d)}">{ch30d:+.2f}%</span></span>
-            </div>
-            <div style="text-align:right;min-width:160px;">
-                <span style="font-size:12px;color:#888;">Now:</span>
-                <span style="font-size:14px;font-weight:bold;color:{sig_color};">{sig_label}</span><br>
-                <span style="font-size:12px;color:#888;">RSI (4h): <b style="color:{r4c};">{rsi4:.2f}</b></span>
-                <span style="font-size:12px;color:#888;">RSI (1D): <b style="color:{r1c};">{rsi1d:.2f}</b></span>
-            </div>
-        </div>""", unsafe_allow_html=True)
+        st.markdown(build_coin_row_html(row, show_charts=True, show_border=True), unsafe_allow_html=True)
 
 
 # ============================================================
-# TAB 4: CONFLUENCE (advanced multi-indicator)
+# TAB 4: CONFLUENCE
 # ============================================================
 with tab_confluence:
     st.markdown("### 🎯 Confluence Scanner")
-    st.caption("Advanced multi-indicator analysis (RSI + MACD + Volume + SMC)")
+    st.caption("Multi-indicator analysis (RSI + MACD + Volume + SMC)")
 
-    st.markdown("#### 🟢 Top Buy Signals")
+    st.markdown("#### 🟢 Top Buy")
     for _, row in df[df["score"] > 0].sort_values("score", ascending=False).head(15).iterrows():
         s = row["score"]
         st.markdown(f"""
@@ -746,7 +684,7 @@ with tab_confluence:
         </div>""", unsafe_allow_html=True)
 
     st.markdown("---")
-    st.markdown("#### 🔴 Top Sell Signals")
+    st.markdown("#### 🔴 Top Sell")
     for _, row in df[df["score"] < 0].sort_values("score").head(15).iterrows():
         s = abs(row["score"])
         st.markdown(f"""
@@ -760,35 +698,37 @@ with tab_confluence:
 
 
 # ============================================================
-# TAB 5: COIN DETAIL with TradingView Chart
+# TAB 5: COIN DETAIL + TradingView Chart
 # ============================================================
 with tab_detail:
     sel = st.selectbox("Select Coin", df["symbol"].tolist(), key="dcoin")
     if sel:
         c = df[df["symbol"] == sel].iloc[0]
-        cw = c.get("cw_alert", "NONE")
-        sig_color = "#FF6347" if cw == "SELL" else "#00FF7F" if cw == "BUY" else "#FFD700"
-        sig_label = cw if cw != "NONE" else "WAIT"
+        sig = c.get("signal", "WAIT")
+        sc = signal_color(sig)
+        img = c.get("coin_image", "")
 
         st.markdown(f"""
         <div style="background:#1a1a2e;border-radius:10px;padding:16px;margin-bottom:12px;">
             <div style="display:flex;flex-wrap:wrap;align-items:center;gap:14px;">
+                {coin_icon_html(img, 40)}
                 <h2 style="margin:0;color:white;">{sel}</h2>
                 <span style="color:#888;">{c.get('coin_name',sel)}</span>
                 <span class="coin-rank">#{int(c.get('rank',999))}</span>
                 <span style="font-size:20px;color:white;font-weight:bold;">{fmt_price(c['price'])}</span>
                 <span class="{ch_cls(c.get('change_24h',0))}" style="font-size:16px;">{c.get('change_24h',0):+.2f}%</span>
-                <span style="color:{sig_color};font-weight:bold;font-size:16px;">Now: {sig_label}</span>
-                <span style="color:#888;">RSI (4h): <b style="color:{'#FF6347' if c.get('rsi_4h',50)>70 else '#00FF7F' if c.get('rsi_4h',50)<30 else 'white'};">{c.get('rsi_4h',50):.2f}</b></span>
+                <span style="color:{sc};font-weight:bold;font-size:16px;">Now: {sig}</span>
+                <span style="color:#888;">RSI (4h): <b style="color:{rsi_color(c.get('rsi_4h',50))};">{c.get('rsi_4h',50):.2f}</b></span>
                 <span style="color:#888;">RSI (1D): <b>{c.get('rsi_1D',50):.2f}</b></span>
             </div>
         </div>""", unsafe_allow_html=True)
 
-        # TradingView chart
-        st.components.v1.html(tradingview_chart(sel), height=520)
+        pair = f"BINANCE:{sel}USDT"
+        st.components.v1.html(f"""
+        <div style="height:500px;background:#131722;border-radius:8px;overflow:hidden;">
+        <iframe src="https://s.tradingview.com/widgetembed/?symbol={pair}&interval=240&hidesidetoolbar=0&symboledit=1&saveimage=0&toolbarbg=131722&studies=%5B%22RSI%40tv-basicstudies%22%5D&theme=dark&style=1&timezone=Etc%2FUTC&withdateranges=1" style="width:100%;height:500px;border:none;"></iframe></div>
+        """, height=520)
 
-        # RSI gauges
-        st.markdown("#### RSI Multi-Timeframe")
         rsi_cols = [col for col in df.columns if col.startswith("rsi_") and "prev" not in col and "closes" not in col]
         gcols = st.columns(len(rsi_cols))
         for i, rc in enumerate(rsi_cols):
@@ -812,7 +752,6 @@ with tab_detail:
         | Volume | **{c.get('vol_trend','—')}** ({c.get('vol_ratio',1.0):.2f}x) |
         | OBV | **{c.get('obv_trend','—')}** |
         """)
-
         if show_smc:
             st.markdown(f"""
             | SMC | Value |
@@ -828,4 +767,4 @@ with tab_detail:
 # FOOTER
 # ============================================================
 st.markdown("---")
-st.markdown(f"<div style='text-align:center;color:#555;font-size:11px;'>🧙‍♂️ Merlin Crypto Scanner | {len(coins_to_scan)} coins × {len(tf_to_scan)} TFs | {ex_name} + CoinGecko | Alert: RSI 4h ≥{CW_SELL_THRESHOLD}→SELL ≤{CW_BUY_THRESHOLD}→BUY | DYOR!</div>", unsafe_allow_html=True)
+st.markdown(f"<div style='text-align:center;color:#555;font-size:11px;'>🧙‍♂️ Merlin Crypto Scanner | {len(coins_to_scan)} coins × {len(tf_to_scan)} TFs | {ex_name} + CoinGecko | Signals: CTB/BUY/CTS/SELL/WAIT | DYOR!</div>", unsafe_allow_html=True)
