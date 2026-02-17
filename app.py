@@ -139,6 +139,19 @@ st.markdown("""
     .stTabs [data-baseweb="tab"] { border-radius: 8px; padding: 8px 16px; font-weight: 600; }
     #MainMenu, footer, header { visibility: hidden; }
 
+    /* Compact chart expanders */
+    .streamlit-expanderHeader {
+        font-size: 13px !important;
+        padding: 4px 12px !important;
+        background: #12121f !important;
+        border-radius: 0 0 8px 8px !important;
+        margin-top: -4px !important;
+    }
+    .streamlit-expanderContent {
+        padding: 4px !important;
+        background: #131722 !important;
+    }
+
     @media (max-width: 768px) {
         .block-container { padding: 0.5rem; }
         .crow .charts { display: none; }
@@ -438,7 +451,20 @@ with tab_alerts:
         ss = len(alert_df[alert_df["signal"].isin(["SELL", "CTS"])])
         st.caption(f"**{len(alert_df)}** signals | 🔴 {ss} CTS/SELL  🟢 {bs} CTB/BUY")
         for _, row in alert_df.head(60).iterrows():
+            sym = row["symbol"]
+            sig = row.get("signal", "WAIT")
+            sc_lbl = signal_color(sig)
             st.markdown(coin_row_html(row, show_charts=True), unsafe_allow_html=True)
+            with st.expander(f"📈 {sym} Chart", expanded=False):
+                pair = f"BINANCE:{sym}USDT"
+                st.components.v1.html(
+                    f'<div style="height:480px;background:#131722;border-radius:8px;overflow:hidden;">'
+                    f'<iframe src="https://s.tradingview.com/widgetembed/?symbol={pair}&interval=240'
+                    f'&hidesidetoolbar=0&symboledit=1&saveimage=0&toolbarbg=131722'
+                    f'&studies=%5B%22RSI%40tv-basicstudies%22%5D&theme=dark&style=1'
+                    f'&timezone=Etc%2FUTC&withdateranges=1" '
+                    f'style="width:100%;height:480px;border:none;"></iframe></div>',
+                    height=500)
 
     if st.session_state.get("send_summary") and telegram_token and telegram_chat_id:
         check_and_send_alerts(alert_df.to_dict("records"), telegram_token, telegram_chat_id, alert_min_score, send_summary=True)
@@ -583,7 +609,18 @@ with tab_market:
     if sc_col in display_df.columns:
         display_df = display_df.sort_values(sc_col, ascending=sa)
     for _, row in display_df.iterrows():
+        sym = row["symbol"]
         st.markdown(coin_row_html(row, show_charts=True), unsafe_allow_html=True)
+        with st.expander(f"📈 {sym} Chart", expanded=False):
+            pair = f"BINANCE:{sym}USDT"
+            st.components.v1.html(
+                f'<div style="height:480px;background:#131722;border-radius:8px;overflow:hidden;">'
+                f'<iframe src="https://s.tradingview.com/widgetembed/?symbol={pair}&interval=240'
+                f'&hidesidetoolbar=0&symboledit=1&saveimage=0&toolbarbg=131722'
+                f'&studies=%5B%22RSI%40tv-basicstudies%22%5D&theme=dark&style=1'
+                f'&timezone=Etc%2FUTC&withdateranges=1" '
+                f'style="width:100%;height:480px;border:none;"></iframe></div>',
+                height=500)
 
 
 # ============================================================
