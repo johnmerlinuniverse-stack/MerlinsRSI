@@ -139,19 +139,6 @@ st.markdown("""
     .stTabs [data-baseweb="tab"] { border-radius: 8px; padding: 8px 16px; font-weight: 600; }
     #MainMenu, footer, header { visibility: hidden; }
 
-    /* Compact chart expanders */
-    .streamlit-expanderHeader {
-        font-size: 13px !important;
-        padding: 4px 12px !important;
-        background: #12121f !important;
-        border-radius: 0 0 8px 8px !important;
-        margin-top: -4px !important;
-    }
-    .streamlit-expanderContent {
-        padding: 4px !important;
-        background: #131722 !important;
-    }
-
     @media (max-width: 768px) {
         .block-container { padding: 0.5rem; }
         .crow .charts { display: none; }
@@ -171,7 +158,7 @@ with st.sidebar:
     coin_list_mode = st.radio("📋 Coin List", ["CryptoWaves (107)", "Top 100 Dynamic", "Extended (180+)"], index=0)
     coin_source = {"CryptoWaves (107)": CRYPTOWAVES_COINS, "Top 100 Dynamic": CRYPTOWAVES_COINS[:50],
                    "Extended (180+)": TOP_COINS_EXTENDED}[coin_list_mode]
-    max_coins = st.slider("Max Coins", 20, 180, min(len(coin_source), 80), 10)
+    max_coins = st.slider("Max Coins", 20, 180, min(len(coin_source), 50), 10)
     st.markdown("---")
     selected_timeframes = st.multiselect("Timeframes", list(TIMEFRAMES.keys()), default=["4h", "1D"])
     show_smc = st.checkbox("Smart Money Concepts", value=False)
@@ -450,21 +437,32 @@ with tab_alerts:
         bs = len(alert_df[alert_df["signal"].isin(["BUY", "CTB"])])
         ss = len(alert_df[alert_df["signal"].isin(["SELL", "CTS"])])
         st.caption(f"**{len(alert_df)}** signals | 🔴 {ss} CTS/SELL  🟢 {bs} CTB/BUY")
+
+        # Single chart selector — only ONE iframe loaded at a time
+        chart_coins = ["— none —"] + alert_df["symbol"].head(60).tolist()
+        chart_sel = st.selectbox("📈 Open Chart:", chart_coins, index=0, key="alert_chart", label_visibility="collapsed")
+        if chart_sel != "— none —":
+            pair = f"BINANCE:{chart_sel}USDT"
+            cd = alert_df[alert_df["symbol"] == chart_sel]
+            if not cd.empty:
+                cr = cd.iloc[0]
+                sig = cr.get("signal", "WAIT")
+                st.markdown(f'<div style="background:#131722;border-radius:8px 8px 0 0;padding:8px 14px;display:flex;flex-wrap:wrap;align-items:center;gap:10px;">'
+                    f'<b style="color:white;">{chart_sel}</b><span style="color:#888;">{cr.get("coin_name","")}</span>'
+                    f'<span style="color:{signal_color(sig)};font-weight:bold;">{sig}</span>'
+                    f'<span style="color:#888;">RSI 4h: <b style="color:{rc(cr.get("rsi_4h",50))};">{cr.get("rsi_4h",50):.2f}</b></span>'
+                    f'<span style="color:#888;">RSI 1D: <b>{cr.get("rsi_1D",50):.2f}</b></span></div>', unsafe_allow_html=True)
+            st.components.v1.html(
+                f'<div style="height:420px;background:#131722;border-radius:0 0 8px 8px;overflow:hidden;">'
+                f'<iframe src="https://s.tradingview.com/widgetembed/?symbol={pair}&interval=240'
+                f'&hidesidetoolbar=1&symboledit=1&saveimage=0&toolbarbg=131722'
+                f'&studies=%5B%22RSI%40tv-basicstudies%22%5D&theme=dark&style=1'
+                f'&timezone=Etc%2FUTC&withdateranges=1" '
+                f'style="width:100%;height:420px;border:none;"></iframe></div>', height=440)
+
+        # Coin rows (no iframes — lightweight)
         for _, row in alert_df.head(60).iterrows():
-            sym = row["symbol"]
-            sig = row.get("signal", "WAIT")
-            sc_lbl = signal_color(sig)
             st.markdown(coin_row_html(row, show_charts=True), unsafe_allow_html=True)
-            with st.expander(f"📈 {sym} Chart", expanded=False):
-                pair = f"BINANCE:{sym}USDT"
-                st.components.v1.html(
-                    f'<div style="height:480px;background:#131722;border-radius:8px;overflow:hidden;">'
-                    f'<iframe src="https://s.tradingview.com/widgetembed/?symbol={pair}&interval=240'
-                    f'&hidesidetoolbar=0&symboledit=1&saveimage=0&toolbarbg=131722'
-                    f'&studies=%5B%22RSI%40tv-basicstudies%22%5D&theme=dark&style=1'
-                    f'&timezone=Etc%2FUTC&withdateranges=1" '
-                    f'style="width:100%;height:480px;border:none;"></iframe></div>',
-                    height=500)
 
     if st.session_state.get("send_summary") and telegram_token and telegram_chat_id:
         check_and_send_alerts(alert_df.to_dict("records"), telegram_token, telegram_chat_id, alert_min_score, send_summary=True)
@@ -608,19 +606,31 @@ with tab_market:
     sc_col, sa = sm.get(sort_market, ("rank", True))
     if sc_col in display_df.columns:
         display_df = display_df.sort_values(sc_col, ascending=sa)
+
+    # Single chart selector
+    mc_coins = ["— none —"] + display_df["symbol"].tolist()
+    mc_chart = st.selectbox("📈 Open Chart:", mc_coins, index=0, key="mc_chart", label_visibility="collapsed")
+    if mc_chart != "— none —":
+        pair = f"BINANCE:{mc_chart}USDT"
+        cd = display_df[display_df["symbol"] == mc_chart]
+        if not cd.empty:
+            cr = cd.iloc[0]
+            sig = cr.get("signal", "WAIT")
+            st.markdown(f'<div style="background:#131722;border-radius:8px 8px 0 0;padding:8px 14px;display:flex;flex-wrap:wrap;align-items:center;gap:10px;">'
+                f'<b style="color:white;">{mc_chart}</b><span style="color:#888;">{cr.get("coin_name","")}</span>'
+                f'<span style="color:{signal_color(sig)};font-weight:bold;">{sig}</span>'
+                f'<span style="color:#888;">RSI 4h: <b style="color:{rc(cr.get("rsi_4h",50))};">{cr.get("rsi_4h",50):.2f}</b></span>'
+                f'<span style="color:#888;">RSI 1D: <b>{cr.get("rsi_1D",50):.2f}</b></span></div>', unsafe_allow_html=True)
+        st.components.v1.html(
+            f'<div style="height:420px;background:#131722;border-radius:0 0 8px 8px;overflow:hidden;">'
+            f'<iframe src="https://s.tradingview.com/widgetembed/?symbol={pair}&interval=240'
+            f'&hidesidetoolbar=1&symboledit=1&saveimage=0&toolbarbg=131722'
+            f'&studies=%5B%22RSI%40tv-basicstudies%22%5D&theme=dark&style=1'
+            f'&timezone=Etc%2FUTC&withdateranges=1" '
+            f'style="width:100%;height:420px;border:none;"></iframe></div>', height=440)
+
     for _, row in display_df.iterrows():
-        sym = row["symbol"]
         st.markdown(coin_row_html(row, show_charts=True), unsafe_allow_html=True)
-        with st.expander(f"📈 {sym} Chart", expanded=False):
-            pair = f"BINANCE:{sym}USDT"
-            st.components.v1.html(
-                f'<div style="height:480px;background:#131722;border-radius:8px;overflow:hidden;">'
-                f'<iframe src="https://s.tradingview.com/widgetembed/?symbol={pair}&interval=240'
-                f'&hidesidetoolbar=0&symboledit=1&saveimage=0&toolbarbg=131722'
-                f'&studies=%5B%22RSI%40tv-basicstudies%22%5D&theme=dark&style=1'
-                f'&timezone=Etc%2FUTC&withdateranges=1" '
-                f'style="width:100%;height:480px;border:none;"></iframe></div>',
-                height=500)
 
 
 # ============================================================
