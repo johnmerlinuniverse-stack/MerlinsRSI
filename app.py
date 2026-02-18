@@ -439,20 +439,15 @@ with tab_det:
         # Header
         st.markdown(f'<div style="background:#1a1a2e;border-radius:10px;padding:16px;margin-bottom:12px;"><div style="display:flex;flex-wrap:wrap;align-items:center;gap:14px;">{icon(im)}<h2 style="margin:0;color:white;">{sel}</h2><span style="color:#888;">{c.get("coin_name",sel)}</span><span class="cr">#{int(c.get("rank",999))}</span><span style="font-size:20px;color:white;font-weight:bold;">{fp(price)}</span><span class="{cc(c.get("change_24h",0))}" style="font-size:16px;">{c.get("change_24h",0):+.2f}%</span><span style="color:{sc};font-weight:bold;font-size:16px;">Now: {sig}</span></div></div>', unsafe_allow_html=True)
 
-        # TradingView Chart
-        st.components.v1.html(tv_iframe(sel,500),height=520)
-
         # ---- COMPUTE ON-DEMAND INDICATORS ----
         from indicators import (calculate_ema_crosses, calculate_bollinger, calculate_atr,
             calculate_support_resistance, calculate_fibonacci, calculate_btc_correlation,
             calculate_sl_tp, calculate_price_range, multi_tf_rsi_summary)
 
-        # Fetch klines for detail analysis (4h primary)
         detail_df = fetch_klines_smart(sel, "4h")
         detail_1d = fetch_klines_smart(sel, "1d")
         btc_df = fetch_klines_smart("BTC", "4h")
 
-        # Compute all
         ema_data = calculate_ema_crosses(detail_df) if not detail_df.empty else {}
         bb_data = calculate_bollinger(detail_df) if not detail_df.empty else {}
         atr_data = calculate_atr(detail_df) if not detail_df.empty else {}
@@ -466,7 +461,6 @@ with tab_det:
         rsi_vals = {}
         for tf in tf_to_scan:
             rsi_vals[tf] = c.get(f"rsi_{tf}", None)
-        # Also compute 1h and 1W if not in scan
         for extra_tf, extra_int in [("1h","1h"),("1W","1w")]:
             if extra_tf not in rsi_vals:
                 edf = fetch_klines_smart(sel, extra_int)
@@ -476,6 +470,167 @@ with tab_det:
                     rsi_vals[extra_tf] = round(float(rs.iloc[-1]),2) if len(rs)>=1 else None
                 else: rsi_vals[extra_tf] = None
         mtf = multi_tf_rsi_summary(rsi_vals)
+
+        # =============================================
+        # AI SUMMARY — Trading Recommendation
+        # =============================================
+        # Count bullish/bearish signals across all indicators
+        bull_pts, bear_pts, reasons_bull, reasons_bear = 0, 0, [], []
+
+        # RSI Multi-TF
+        if mtf["confluence"] in ("STRONG_BUY",): bull_pts += 3; reasons_bull.append("Alle Timeframes im BUY-Bereich")
+        elif mtf["confluence"] == "LEAN_BUY": bull_pts += 1; reasons_bull.append("Mehrheit der TFs bullish")
+        elif mtf["confluence"] in ("STRONG_SELL",): bear_pts += 3; reasons_bear.append("Alle Timeframes im SELL-Bereich")
+        elif mtf["confluence"] == "LEAN_SELL": bear_pts += 1; reasons_bear.append("Mehrheit der TFs bearish")
+        # EMA
+        for ek in ["cross_9_21","cross_50_200"]:
+            ev = ema_data.get(ek,"N/A")
+            if ev == "GOLDEN": bull_pts += 2; reasons_bull.append(f"{ek.replace('cross_','EMA ')}: Golden Cross")
+            elif ev == "BULLISH": bull_pts += 1; reasons_bull.append(f"{ek.replace('cross_','EMA ')}: Bullish")
+            elif ev == "DEATH": bear_pts += 2; reasons_bear.append(f"{ek.replace('cross_','EMA ')}: Death Cross")
+            elif ev == "BEARISH": bear_pts += 1; reasons_bear.append(f"{ek.replace('cross_','EMA ')}: Bearish")
+        # MACD
+        mt = c.get("macd_trend","NEUTRAL")
+        if mt == "BULLISH": bull_pts += 1; reasons_bull.append("MACD bullish")
+        elif mt == "BEARISH": bear_pts += 1; reasons_bear.append("MACD bearish")
+        # Bollinger
+        bbp = bb_data.get("bb_pct", 50)
+        if bbp < 15: bull_pts += 2; reasons_bull.append(f"Bollinger: Preis am unteren Band ({bbp:.0f}%)")
+        elif bbp < 30: bull_pts += 1; reasons_bull.append(f"Bollinger: untere Zone ({bbp:.0f}%)")
+        elif bbp > 85: bear_pts += 2; reasons_bear.append(f"Bollinger: Preis am oberen Band ({bbp:.0f}%)")
+        elif bbp > 70: bear_pts += 1; reasons_bear.append(f"Bollinger: obere Zone ({bbp:.0f}%)")
+        # OBV
+        obv = c.get("obv_trend","NEUTRAL")
+        if obv == "BULLISH": bull_pts += 1; reasons_bull.append("OBV-Trend steigend")
+        elif obv == "BEARISH": bear_pts += 1; reasons_bear.append("OBV-Trend fallend")
+        # Price range
+        pos7 = pr_data.get("7d_position", 50)
+        if pos7 < 20: bull_pts += 1; reasons_bull.append(f"Preis nahe 7d-Tief ({pos7:.0f}%)")
+        elif pos7 > 80: bear_pts += 1; reasons_bear.append(f"Preis nahe 7d-Hoch ({pos7:.0f}%)")
+        # Fib zone
+        fz = fib_data.get("fib_zone","N/A")
+        if "61.8" in fz or "near low" in fz: bull_pts += 1; reasons_bull.append(f"Fibonacci: Golden Zone ({fz})")
+        elif "near high" in fz: bear_pts += 1; reasons_bear.append(f"Fibonacci: nahe Swing High ({fz})")
+
+        total_pts = bull_pts + bear_pts
+        if total_pts == 0: total_pts = 1
+        bull_pct = bull_pts / total_pts * 100; bear_pct = bear_pts / total_pts * 100
+
+        # Generate recommendation text
+        if bull_pts >= bear_pts + 4:
+            verdict = "STRONG BUY"; vcolor = "#00FF00"; vicon = "🟢"
+            advice = "Starkes Kaufsignal: Die Mehrheit der Indikatoren ist bullish. Ein Einstieg kann in Betracht gezogen werden, idealerweise mit einem Stop-Loss unterhalb des nächsten Support-Levels."
+        elif bull_pts >= bear_pts + 2:
+            verdict = "BUY"; vcolor = "#00FF7F"; vicon = "🟢"
+            advice = "Moderates Kaufsignal: Mehrere Indikatoren deuten auf steigende Kurse hin. Ein Einstieg ist möglich, aber auf Bestätigung durch Volumen achten."
+        elif bear_pts >= bull_pts + 4:
+            verdict = "STRONG SELL"; vcolor = "#FF0040"; vicon = "🔴"
+            advice = "Starkes Verkaufsignal: Die Mehrheit der Indikatoren ist bearish. Bestehende Positionen absichern oder schließen. Neue Short-Positionen mit SL über der nächsten Resistance."
+        elif bear_pts >= bull_pts + 2:
+            verdict = "SELL"; vcolor = "#FF6347"; vicon = "🔴"
+            advice = "Moderates Verkaufsignal: Mehrere Indikatoren deuten auf fallende Kurse hin. Vorsicht bei Long-Positionen, Stop-Loss eng setzen."
+        else:
+            verdict = "ABWARTEN"; vcolor = "#FFD700"; vicon = "🟡"
+            advice = "Gemischte Signale: Bullische und bearische Indikatoren halten sich die Waage. Am besten auf eine klare Richtung warten, bevor ein Trade eingegangen wird."
+
+        # Timing advice
+        vol_note = ""
+        atrvol = atr_data.get("volatility","LOW")
+        if atrvol in ("HIGH","VERY_HIGH"):
+            vol_note = " ⚠️ Hohe Volatilität — größere Stop-Losses nötig, kleinere Positionsgrößen empfohlen."
+        elif atrvol == "LOW":
+            vol_note = " 💤 Niedrige Volatilität — ein Ausbruch könnte bevorstehen. Auf Bollinger Squeeze achten."
+
+        corr_note = ""
+        btc_c = btc_corr.get("correlation",0)
+        if abs(btc_c) > 0.7:
+            corr_note = f" 🔗 Starke BTC-Korrelation ({btc_c:.2f}) — BTC-Bewegungen werden diesen Coin stark beeinflussen."
+
+        st.markdown(f'''<div style="background:linear-gradient(135deg,#1a1a2e,#16213e);border:2px solid {vcolor}44;border-radius:12px;padding:18px;margin-bottom:16px;">
+<div style="display:flex;align-items:center;gap:12px;margin-bottom:10px;">
+<span style="font-size:28px;">{vicon}</span>
+<div><span style="color:{vcolor};font-size:22px;font-weight:bold;">{verdict}</span>
+<span style="color:#888;font-size:13px;margin-left:10px;">({bull_pts} bullish / {bear_pts} bearish Punkte)</span></div>
+<div style="flex:1;"></div>
+<div style="background:#2a2a4a;border-radius:20px;padding:2px;width:120px;height:14px;overflow:hidden;">
+<div style="display:flex;height:100%;"><div style="width:{bull_pct}%;background:#00FF7F;"></div><div style="width:{bear_pct}%;background:#FF6347;"></div></div>
+</div></div>
+<div style="color:#ccc;font-size:13px;line-height:1.5;">{advice}{vol_note}{corr_note}</div>
+<div style="margin-top:10px;font-size:11px;color:#666;">
+{"✅ " + " · ".join(reasons_bull[:4]) if reasons_bull else ""}<br>
+{"❌ " + " · ".join(reasons_bear[:4]) if reasons_bear else ""}
+</div></div>''', unsafe_allow_html=True)
+
+        # =============================================
+        # TradingView Chart
+        # =============================================
+        st.components.v1.html(tv_iframe(sel,500),height=520)
+
+        # =============================================
+        # Plotly Key Levels Chart (S/R + Fibonacci on candlesticks)
+        # =============================================
+        if not detail_df.empty and len(detail_df) >= 20:
+            chart_df = detail_df.tail(60).copy()
+            fig_levels = go.Figure()
+            # Candlesticks
+            fig_levels.add_trace(go.Candlestick(
+                x=list(range(len(chart_df))), open=chart_df["open"], high=chart_df["high"],
+                low=chart_df["low"], close=chart_df["close"], name="Price",
+                increasing_line_color="#00FF7F", decreasing_line_color="#FF6347"))
+            # Support lines
+            for i, s_val in enumerate(sr_data.get("supports",[])[:3]):
+                fig_levels.add_hline(y=s_val, line_dash="dash", line_color="#00FF7F",
+                    line_width=1.5, opacity=0.8 - i*0.2,
+                    annotation_text=f"S{i+1}: {fp(s_val)}", annotation_position="left",
+                    annotation_font_color="#00FF7F", annotation_font_size=10)
+            # Resistance lines
+            for i, r_val in enumerate(sr_data.get("resistances",[])[:3]):
+                fig_levels.add_hline(y=r_val, line_dash="dash", line_color="#FF6347",
+                    line_width=1.5, opacity=0.8 - i*0.2,
+                    annotation_text=f"R{i+1}: {fp(r_val)}", annotation_position="left",
+                    annotation_font_color="#FF6347", annotation_font_size=10)
+            # Fibonacci levels
+            fib_colors = {"0.236":"#FFD700","0.382":"#FFA500","0.5":"#FF69B4","0.618":"#9370DB","0.786":"#4169E1"}
+            for label, val in fib_data.get("fib_levels",{}).items():
+                for fk, fc in fib_colors.items():
+                    if fk in label:
+                        fig_levels.add_hline(y=val, line_dash="dot", line_color=fc,
+                            line_width=1, opacity=0.5,
+                            annotation_text=f"Fib {label}: {fp(val)}", annotation_position="right",
+                            annotation_font_color=fc, annotation_font_size=9)
+            # SL/TP levels if active signal
+            if sig in ("BUY","CTB","SELL","CTS") and sltp.get("sl",0) > 0:
+                fig_levels.add_hline(y=sltp["sl"], line_dash="dashdot", line_color="#FF0040",
+                    line_width=2, annotation_text=f"SL: {fp(sltp['sl'])}", annotation_position="left",
+                    annotation_font_color="#FF0040", annotation_font_size=10)
+                fig_levels.add_hline(y=sltp["tp1"], line_dash="dashdot", line_color="#00DD66",
+                    line_width=1.5, annotation_text=f"TP1: {fp(sltp['tp1'])}", annotation_position="left",
+                    annotation_font_color="#00DD66", annotation_font_size=10)
+                if sltp.get("tp2",0) > 0:
+                    fig_levels.add_hline(y=sltp["tp2"], line_dash="dashdot", line_color="#00FF7F",
+                        line_width=1.5, annotation_text=f"TP2: {fp(sltp['tp2'])}", annotation_position="left",
+                        annotation_font_color="#00FF7F", annotation_font_size=10)
+            # Bollinger Bands
+            if bb_data.get("bb_upper",0) > 0:
+                # Compute BB for chart range
+                from ta.volatility import BollingerBands as _BB
+                if len(detail_df) >= 20:
+                    _bbc = _BB(close=detail_df["close"], window=20, window_dev=2)
+                    bb_u = _bbc.bollinger_hband().tail(60).values
+                    bb_m = _bbc.bollinger_mavg().tail(60).values
+                    bb_l = _bbc.bollinger_lband().tail(60).values
+                    x_range = list(range(len(chart_df)))
+                    fig_levels.add_trace(go.Scatter(x=x_range, y=bb_u, mode="lines", line=dict(color="rgba(255,165,0,0.3)", width=1), name="BB Upper", showlegend=False))
+                    fig_levels.add_trace(go.Scatter(x=x_range, y=bb_l, mode="lines", line=dict(color="rgba(255,165,0,0.3)", width=1), name="BB Lower", fill="tonexty", fillcolor="rgba(255,165,0,0.05)", showlegend=False))
+                    fig_levels.add_trace(go.Scatter(x=x_range, y=bb_m, mode="lines", line=dict(color="rgba(255,165,0,0.5)", width=1, dash="dot"), name="BB Mid", showlegend=False))
+
+            fig_levels.update_layout(
+                title=dict(text=f"📊 {sel} — Key Levels (4h)", font=dict(size=14, color="white"), x=0.5),
+                template="plotly_dark", paper_bgcolor="#0E1117", plot_bgcolor="#0E1117", height=450,
+                xaxis=dict(showticklabels=False, showgrid=False, rangeslider=dict(visible=False)),
+                yaxis=dict(title="Price", gridcolor="rgba(255,255,255,0.05)", side="right"),
+                showlegend=False, margin=dict(l=10, r=80, t=40, b=10))
+            st.plotly_chart(fig_levels, use_container_width=True)
 
         # =============================================
         # SECTION 1: Multi-TF RSI Traffic Light
@@ -492,21 +647,68 @@ with tab_det:
                     elif val >= 70: bg, tc = "rgba(255,0,64,0.15)", "#FF0040"
                     elif val >= 58: bg, tc = "rgba(255,99,71,0.1)", "#FF6347"
                     else: bg, tc = "rgba(255,215,0,0.08)", "#FFD700"
-                    # Arrow direction
                     prev = c.get(f"rsi_prev_{tf}", val)
                     arrow = "↑" if val > prev else ("↓" if val < prev else "→")
                     st.markdown(f"<div style='text-align:center;background:{bg};border:1px solid {tc}33;border-radius:8px;padding:10px;'><div style='color:#888;font-size:12px;'>{tf}</div><div style='color:{tc};font-size:22px;font-weight:bold;'>{val:.1f} {arrow}</div></div>", unsafe_allow_html=True)
-
-        # Confluence verdict
         conf_color = {"STRONG_BUY":"#00FF00","LEAN_BUY":"#00FF7F","STRONG_SELL":"#FF0040","LEAN_SELL":"#FF6347"}.get(mtf["confluence"],"#FFD700")
-        st.markdown(f"<div style='text-align:center;padding:6px;'><span style='color:{conf_color};font-weight:bold;font-size:14px;'>TF Confluence: {mtf['confluence']}</span> <span style='color:#888;'>({mtf['bullish_count']} bullish / {mtf['bearish_count']} bearish of {mtf['total']} TFs)</span></div>", unsafe_allow_html=True)
+        st.markdown(f"<div style='text-align:center;padding:6px;'><span style='color:{conf_color};font-weight:bold;font-size:14px;'>TF Confluence: {mtf['confluence']}</span> <span style='color:#888;'>({mtf['bullish_count']} bullish / {mtf['bearish_count']} bearish von {mtf['total']} TFs)</span></div>", unsafe_allow_html=True)
+        with st.expander("ℹ️ Was bedeutet Multi-TF RSI?"):
+            st.markdown("""**RSI (Relative Strength Index)** misst die Stärke von Kursbewegungen auf einer Skala von 0-100.
+
+**Zonen:** ≤30 = Überverkauft (potentieller Kauf) · 30-42 = Schwach · 42-58 = Neutral · 58-70 = Stark · ≥70 = Überkauft (potentieller Verkauf)
+
+**Multi-TF Confluence:** Wenn mehrere Timeframes gleichzeitig im gleichen Bereich sind, ist das Signal stärker.
+- **Alle TFs grün (≤42):** Starkes Kaufsignal — der Coin ist auf allen Ebenen überverkauft
+- **Alle TFs rot (≥58):** Starkes Verkaufsignal — der Coin ist auf allen Ebenen überkauft
+- **Gemischt:** Abwarten — kurzfristige und langfristige Trends widersprechen sich
+
+**Pfeile ↑↓→** zeigen ob der RSI gerade steigt, fällt oder seitwärts läuft. Ein steigender RSI im überverkauften Bereich deutet auf eine Erholung hin.
+
+**Empfehlung:** Idealerweise auf Übereinstimmung von mindestens 3 TFs warten, bevor ein Trade eingegangen wird.""")
 
         # =============================================
-        # SECTION 2: EMA Crosses + Bollinger + Volatility
+        # SECTION 2: Risk Management (moved up)
         # =============================================
-        st.markdown("### 📐 Trend & Volatility")
+        st.markdown("### 🛡️ Risk Management (ATR-based)")
+        if sig in ("BUY","CTB","SELL","CTS"):
+            is_buy = sig in ("BUY","CTB")
+            sl_c = "#FF6347" if is_buy else "#00FF7F"
+            tp_c = "#00FF7F" if is_buy else "#FF6347"
+            sl_dist = (sltp["sl"]/price-1)*100
+            tp1_dist = (sltp["tp1"]/price-1)*100
+            tp2_dist = (sltp["tp2"]/price-1)*100 if sltp["tp2"] else 0
+            st.markdown(f'<div style="background:#1a1a2e;border-radius:10px;padding:14px;display:flex;flex-wrap:wrap;gap:20px;justify-content:space-around;">'
+                f'<div style="text-align:center;"><div style="color:#888;font-size:11px;">Stop-Loss</div><div style="color:{sl_c};font-size:18px;font-weight:bold;">{fp(sltp["sl"])}</div><div style="color:{sl_c};font-size:12px;">{sl_dist:+.2f}%</div></div>'
+                f'<div style="text-align:center;"><div style="color:#888;font-size:11px;">Entry</div><div style="color:white;font-size:18px;font-weight:bold;">{fp(price)}</div><div style="color:#888;font-size:12px;">current</div></div>'
+                f'<div style="text-align:center;"><div style="color:#888;font-size:11px;">TP 1 (1.5x ATR)</div><div style="color:{tp_c};font-size:18px;font-weight:bold;">{fp(sltp["tp1"])}</div><div style="color:{tp_c};font-size:12px;">{tp1_dist:+.2f}%</div></div>'
+                f'<div style="text-align:center;"><div style="color:#888;font-size:11px;">TP 2 (S/R)</div><div style="color:{tp_c};font-size:18px;font-weight:bold;">{fp(sltp["tp2"])}</div><div style="color:{tp_c};font-size:12px;">{tp2_dist:+.2f}%</div></div>'
+                f'<div style="text-align:center;"><div style="color:#888;font-size:11px;">Risk/Reward</div><div style="color:#FFD700;font-size:18px;font-weight:bold;">{sltp["risk_reward"]:.2f}</div></div>'
+                f'</div>', unsafe_allow_html=True)
+        else:
+            st.info("SL/TP nur verfügbar wenn Signal BUY, SELL, CTB oder CTS ist.")
+        with st.expander("ℹ️ Was bedeutet Risk Management?"):
+            st.markdown(f"""**ATR (Average True Range)** misst die durchschnittliche Kursbewegung pro Kerze. Aktuell: **{fp(atr_data.get('atr',0))}** ({atr_data.get('atr_pct',0):.2f}% vom Preis).
+
+**Stop-Loss (SL):** Wird auf dem nächsten Support/Resistance-Level gesetzt, maximal 3x ATR vom Entry entfernt. Schützt vor großen Verlusten.
+
+**Take-Profit Levels:**
+- **TP1 (1.5x ATR):** Konservatives Ziel — hier kann ein Teil der Position geschlossen werden
+- **TP2 (S/R Level):** Basiert auf dem nächsten Widerstands-/Unterstützungsniveau
+- **TP3 (4x ATR):** Aggressives Ziel für Teilpositionen
+
+**Risk/Reward Ratio:** Verhältnis von potentiellem Gewinn zu potentiellem Verlust.
+- **≥ 2.0:** Gutes Setup — der potentielle Gewinn ist mindestens doppelt so hoch wie das Risiko
+- **1.0-2.0:** Akzeptabel — nur mit starker Signalbestätigung traden
+- **< 1.0:** Schlechtes Setup — besser auf eine bessere Gelegenheit warten
+
+**Positionsgröße:** Bei {atr_data.get('volatility','LOW')} Volatilität empfohlen:
+- {'⚠️ Kleine Position (0.5-1% des Kapitals) wegen hoher Volatilität' if atr_data.get('volatility') in ('HIGH','VERY_HIGH') else '✅ Normale Position (1-2% des Kapitals)'}""")
+
+        # =============================================
+        # SECTION 3: Trend & Volatility
+        # =============================================
+        st.markdown("### 📐 Trend & Volatilität")
         t1, t2, t3 = st.columns(3)
-
         with t1:
             st.markdown("**EMA Crossovers**")
             def ema_badge(cross):
@@ -520,10 +722,8 @@ with tab_det:
             if ema_data.get('price_vs_ema200') is not None:
                 pv200 = ema_data.get('price_vs_ema200',0)
                 st.markdown(f"Price vs EMA200: <span class='{cc(pv200)}'>{pv200:+.2f}%</span>", unsafe_allow_html=True)
-
         with t2:
             st.markdown("**Bollinger Bands**")
-            bbp = bb_data.get("bb_pct",50)
             bbpos = bb_data.get("bb_position","MIDDLE")
             if bbp >= 80: bbc = "#FF6347"
             elif bbp <= 20: bbc = "#00FF7F"
@@ -533,31 +733,50 @@ with tab_det:
             st.markdown(f"Upper: {fp(bb_data.get('bb_upper',0))}")
             st.markdown(f"Middle: {fp(bb_data.get('bb_middle',0))}")
             st.markdown(f"Lower: {fp(bb_data.get('bb_lower',0))}")
-
         with t3:
-            st.markdown("**Volatility (ATR)**")
+            st.markdown("**Volatilität (ATR)**")
             vol = atr_data.get("volatility","LOW")
             vc = {"VERY_HIGH":"#FF0040","HIGH":"#FF6347","MEDIUM":"#FFD700","LOW":"#00FF7F"}.get(vol,"#888")
             st.markdown(f"ATR: **{fp(atr_data.get('atr',0))}**")
             st.markdown(f"ATR %: <span style='color:{vc};font-weight:bold;'>{atr_data.get('atr_pct',0):.2f}%</span> ({vol})", unsafe_allow_html=True)
-            st.markdown(f"BTC Correlation: **{btc_corr.get('correlation',0):.2f}** ({btc_corr.get('corr_label','N/A')})")
+            st.markdown(f"BTC Korrelation: **{btc_corr.get('correlation',0):.2f}** ({btc_corr.get('corr_label','N/A')})")
+        with st.expander("ℹ️ Was bedeuten Trend & Volatilität?"):
+            st.markdown("""**EMA Crossovers (Exponential Moving Average):**
+- **EMA 9/21:** Kurzfristiger Trend. Golden Cross (9 kreuzt 21 nach oben) = bullish Signal. Death Cross = bearish.
+- **EMA 50/200:** Langfristiger Trend. Golden Cross hier ist ein sehr starkes Kaufsignal (historisch ~70% Trefferquote).
+- **Preis vs EMA:** Wenn der Preis über der EMA liegt, ist der Trend bullish. Unter der EMA = bearish.
+- **Kombination:** Kurzfristig bullish + langfristig bullish = stärkstes Signal für Long-Positionen.
+
+**Bollinger Bands:**
+- **Position 0-20%:** Preis am unteren Band → potentieller Kauf (überverkauft)
+- **Position 80-100%:** Preis am oberen Band → potentieller Verkauf (überkauft)
+- **Schmale Bänder (Width < 3%):** "Bollinger Squeeze" — ein starker Ausbruch steht bevor
+- **Breite Bänder (Width > 8%):** Hohe Volatilität, Trend könnte sich erschöpfen
+
+**ATR & Volatilität:**
+- **Niedrig (< 1.5%):** Ruhiger Markt, enge SL möglich, Squeeze-Warnung
+- **Mittel (1.5-3%):** Normales Trading-Umfeld
+- **Hoch (> 3%):** Vorsicht — größere SL nötig, kleinere Positionsgrößen
+
+**BTC Korrelation:**
+- **> 0.7:** Coin folgt BTC eng → BTC-Chart beobachten
+- **< -0.3:** Coin bewegt sich gegen BTC → potentieller Hedge
+- **-0.3 bis 0.3:** Unabhängig — eigene Dynamik""")
 
         # =============================================
-        # SECTION 3: Support/Resistance + Fibonacci
+        # SECTION 4: Key Levels (S/R + Fibonacci)
         # =============================================
         st.markdown("### 🎯 Key Levels")
         l1, l2 = st.columns(2)
-
         with l1:
             st.markdown("**Support & Resistance**")
             for r_val in sr_data.get("resistances",[])[:3]:
                 dist = (r_val/price-1)*100
                 st.markdown(f'<span style="color:#FF6347;">R: {fp(r_val)}</span> <span style="color:#888;">({dist:+.2f}%)</span>', unsafe_allow_html=True)
-            st.markdown(f'<span style="color:white;font-weight:bold;">▸ Current: {fp(price)}</span>', unsafe_allow_html=True)
+            st.markdown(f'<span style="color:white;font-weight:bold;">▸ Aktuell: {fp(price)}</span>', unsafe_allow_html=True)
             for s_val in sr_data.get("supports",[])[:3]:
                 dist = (s_val/price-1)*100
                 st.markdown(f'<span style="color:#00FF7F;">S: {fp(s_val)}</span> <span style="color:#888;">({dist:+.2f}%)</span>', unsafe_allow_html=True)
-
         with l2:
             st.markdown("**Fibonacci Retracement**")
             st.markdown(f"Zone: **{fib_data.get('fib_zone','N/A')}**")
@@ -565,9 +784,26 @@ with tab_det:
                 dist = (val/price-1)*100
                 active = "◀" if abs(dist) < 2 else ""
                 st.markdown(f"`{label}` {fp(val)} ({dist:+.2f}%) {active}")
+        with st.expander("ℹ️ Was bedeuten Key Levels?"):
+            st.markdown("""**Support (Unterstützung):** Preislevels wo historisch Käufer eingestiegen sind. Der Kurs tendiert dazu, an diesen Levels zu "bouncen". Je öfter ein Level getestet wurde, desto stärker ist es.
+
+**Resistance (Widerstand):** Preislevels wo historisch Verkäufer aktiv waren. Der Kurs prallt hier oft ab. Ein Durchbruch durch eine Resistance wird oft zu einer neuen Support.
+
+**Fibonacci Retracement:** Basiert auf der Fibonacci-Zahlenfolge. Die wichtigsten Levels:
+- **38.2%:** Erste Korrektur-Zone bei starken Trends
+- **50%:** Psychologisches Level, oft respektiert
+- **61.8% (Golden Zone):** Das wichtigste Fib-Level. Hier drehen die meisten Korrekturen um
+- **78.6%:** Letzte Chance für einen Bounce, bevor der Trend bricht
+
+**Trading mit Key Levels:**
+- **Kaufen:** An Support-Levels oder in der Fib 61.8-78.6% Zone, mit SL knapp darunter
+- **Verkaufen:** An Resistance-Levels oder wenn der Preis die Fib 0-23.6% Zone erreicht
+- **Breakout:** Wenn ein Level klar durchbrochen wird (mit Volumen), in Richtung des Ausbruchs traden
+
+**Im Chart oben** sind alle Levels als horizontale Linien eingezeichnet: Grün = Support, Rot = Resistance, Farbig = Fibonacci.""")
 
         # =============================================
-        # SECTION 4: Price Range Position
+        # SECTION 5: Price Range
         # =============================================
         st.markdown("### 📊 Price Range")
         pr1, pr2 = st.columns(2)
@@ -583,35 +819,27 @@ with tab_det:
                 st.markdown(f'<div style="background:#2a2a4a;border-radius:4px;height:12px;position:relative;margin:4px 0;">'
                     f'<div style="position:absolute;left:{pos}%;top:-2px;width:4px;height:16px;background:{pc};border-radius:2px;"></div>'
                     f'<div style="background:linear-gradient(90deg,#00FF7F33,#FFD70033,#FF634733);height:12px;border-radius:4px;"></div></div>'
-                    f'<span style="color:{pc};font-weight:bold;">{pos:.0f}%</span> <span style="color:#888;">position in range</span>', unsafe_allow_html=True)
+                    f'<span style="color:{pc};font-weight:bold;">{pos:.0f}%</span> <span style="color:#888;">Position in Range</span>', unsafe_allow_html=True)
+        with st.expander("ℹ️ Was bedeutet Price Range?"):
+            st.markdown("""**Price Range** zeigt wo sich der aktuelle Preis innerhalb der 7-Tage und 30-Tage Spanne befindet.
 
-        # =============================================
-        # SECTION 5: SL / TP Recommendations
-        # =============================================
-        st.markdown("### 🛡️ Risk Management (ATR-based)")
-        if sig in ("BUY","CTB","SELL","CTS"):
-            is_buy = sig in ("BUY","CTB")
-            sl_c = "#FF6347" if is_buy else "#00FF7F"
-            tp_c = "#00FF7F" if is_buy else "#FF6347"
-            sl_dist = (sltp["sl"]/price-1)*100
-            tp1_dist = (sltp["tp1"]/price-1)*100
-            tp2_dist = (sltp["tp2"]/price-1)*100 if sltp["tp2"] else 0
+- **0-20% (nahe Low):** 🟢 Potentieller Kaufbereich — Preis ist nahe dem Tiefpunkt der letzten Tage
+- **40-60% (Mitte):** 🟡 Neutraler Bereich
+- **80-100% (nahe High):** 🔴 Potentieller Verkaufsbereich — Preis ist nahe dem Höchststand
 
-            st.markdown(f'<div style="background:#1a1a2e;border-radius:10px;padding:14px;display:flex;flex-wrap:wrap;gap:20px;justify-content:space-around;">'
-                f'<div style="text-align:center;"><div style="color:#888;font-size:11px;">Stop-Loss</div><div style="color:{sl_c};font-size:18px;font-weight:bold;">{fp(sltp["sl"])}</div><div style="color:{sl_c};font-size:12px;">{sl_dist:+.2f}%</div></div>'
-                f'<div style="text-align:center;"><div style="color:#888;font-size:11px;">Entry</div><div style="color:white;font-size:18px;font-weight:bold;">{fp(price)}</div><div style="color:#888;font-size:12px;">current</div></div>'
-                f'<div style="text-align:center;"><div style="color:#888;font-size:11px;">TP 1 (1.5x ATR)</div><div style="color:{tp_c};font-size:18px;font-weight:bold;">{fp(sltp["tp1"])}</div><div style="color:{tp_c};font-size:12px;">{tp1_dist:+.2f}%</div></div>'
-                f'<div style="text-align:center;"><div style="color:#888;font-size:11px;">TP 2 (S/R)</div><div style="color:{tp_c};font-size:18px;font-weight:bold;">{fp(sltp["tp2"])}</div><div style="color:{tp_c};font-size:12px;">{tp2_dist:+.2f}%</div></div>'
-                f'<div style="text-align:center;"><div style="color:#888;font-size:11px;">Risk/Reward</div><div style="color:#FFD700;font-size:18px;font-weight:bold;">{sltp["risk_reward"]:.2f}</div></div>'
-                f'</div>', unsafe_allow_html=True)
-        else:
-            st.info("SL/TP only available when signal is BUY, SELL, CTB or CTS.")
+**Range %** zeigt die Volatilität der Periode:
+- Kleine Range (< 5%) = wenig Bewegung, möglicher Ausbruch bevorsteht
+- Große Range (> 15%) = starke Schwankungen, höheres Risiko
+
+**Kombination mit anderen Indikatoren:**
+- Preis nahe 7d-Low + RSI überverkauft + Support-Level = starkes Kaufsignal
+- Preis nahe 30d-High + RSI überkauft + Resistance = starkes Verkaufsignal""")
 
         # =============================================
         # SECTION 6: Indicator Summary Table
         # =============================================
-        st.markdown("### 📋 Indicators Summary")
-        st.markdown(f"""| Indicator | Value | Signal |
+        st.markdown("### 📋 Indikator-Übersicht")
+        st.markdown(f"""| Indikator | Wert | Signal |
 |---|---|---|
 | MACD | {c.get('macd_trend','—')} (hist: {c.get('macd_histogram',0):.4f}) | {'🟢' if c.get('macd_trend')=='BULLISH' else ('🔴' if c.get('macd_trend')=='BEARISH' else '🟡')} |
 | Stoch RSI | K: {c.get('stoch_rsi_k',50):.1f} / D: {c.get('stoch_rsi_d',50):.1f} | {'🟢' if c.get('stoch_rsi_k',50)<20 else ('🔴' if c.get('stoch_rsi_k',50)>80 else '🟡')} |
@@ -619,8 +847,20 @@ with tab_det:
 | EMA 9/21 | {ema_data.get('cross_9_21','N/A')} | {'🟢' if ema_data.get('cross_9_21') in ('GOLDEN','BULLISH') else ('🔴' if ema_data.get('cross_9_21') in ('DEATH','BEARISH') else '🟡')} |
 | EMA 50/200 | {ema_data.get('cross_50_200','N/A')} | {'🟢' if ema_data.get('cross_50_200') in ('GOLDEN','BULLISH') else ('🔴' if ema_data.get('cross_50_200') in ('DEATH','BEARISH') else '🟡')} |
 | Bollinger | {bb_data.get('bb_position','—')} ({bb_data.get('bb_pct',50):.0f}%) | {'🟢' if bb_data.get('bb_pct',50)<20 else ('🔴' if bb_data.get('bb_pct',50)>80 else '🟡')} |
-| ATR Volatility | {atr_data.get('volatility','—')} ({atr_data.get('atr_pct',0):.2f}%) | {'⚠️' if atr_data.get('volatility') in ('HIGH','VERY_HIGH') else '✅'} |
-| BTC Correlation | {btc_corr.get('correlation',0):.2f} ({btc_corr.get('corr_label','N/A')}) | {'🔗' if abs(btc_corr.get('correlation',0))>0.5 else '🔓'} |""")
+| ATR Volatilität | {atr_data.get('volatility','—')} ({atr_data.get('atr_pct',0):.2f}%) | {'⚠️' if atr_data.get('volatility') in ('HIGH','VERY_HIGH') else '✅'} |
+| BTC Korrelation | {btc_corr.get('correlation',0):.2f} ({btc_corr.get('corr_label','N/A')}) | {'🔗' if abs(btc_corr.get('correlation',0))>0.5 else '🔓'} |""")
+        with st.expander("ℹ️ Was bedeutet die Indikator-Übersicht?"):
+            st.markdown("""Diese Tabelle fasst alle Indikatoren zusammen. **Je mehr 🟢 desto bullischer, je mehr 🔴 desto bearischer.**
+
+**MACD:** Zeigt Momentum-Änderungen. Bullish = Kaufdruck nimmt zu. Das Histogramm zeigt die Stärke.
+
+**Stoch RSI:** Kombination aus Stochastik und RSI. K < 20 = überverkauft (kaufen), K > 80 = überkauft (verkaufen). K kreuzt D nach oben = Kaufsignal.
+
+**Volume:** Vergleicht aktuelles Volumen mit dem 20-Perioden-Durchschnitt. Hohes Volumen bestätigt Trends. OBV (On-Balance Volume) steigend = Akkumulation.
+
+**Ideales Kauf-Setup:** RSI < 42 + EMA bullish + MACD bullish + Bollinger < 20% + Volumen steigend → starkes Kaufsignal mit hoher Erfolgswahrscheinlichkeit.
+
+**Ideales Verkauf-Setup:** RSI > 58 + EMA bearish + MACD bearish + Bollinger > 80% + Volumen steigend → starkes Verkaufsignal.""")
 
         st.caption("⚠️ DYOR — Dies ist keine Finanzberatung. Alle Berechnungen basieren auf historischen Daten.")
 
