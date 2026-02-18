@@ -570,66 +570,175 @@ with tab_det:
         # Plotly Key Levels Chart (S/R + Fibonacci on candlesticks)
         # =============================================
         if not detail_df.empty and len(detail_df) >= 20:
+            st.markdown("### 📊 Key Levels Chart")
+            # Layer toggles
+            lc1, lc2, lc3, lc4 = st.columns(4)
+            with lc1: show_sr = st.checkbox("Support/Resistance", value=True, key="lv_sr")
+            with lc2: show_fib = st.checkbox("Fibonacci", value=True, key="lv_fib")
+            with lc3: show_sltp = st.checkbox("SL / TP", value=True, key="lv_sltp")
+            with lc4: show_bb = st.checkbox("Bollinger Bands", value=False, key="lv_bb")
+
             chart_df = detail_df.tail(60).copy()
             fig_levels = go.Figure()
-            # Candlesticks
+
+            # --- Bollinger Bands (background layer, subtle) ---
+            if show_bb and bb_data.get("bb_upper",0) > 0 and len(detail_df) >= 20:
+                from ta.volatility import BollingerBands as _BB
+                _bbc = _BB(close=detail_df["close"], window=20, window_dev=2)
+                bb_u = _bbc.bollinger_hband().tail(60).values
+                bb_m = _bbc.bollinger_mavg().tail(60).values
+                bb_l = _bbc.bollinger_lband().tail(60).values
+                x_range = list(range(len(chart_df)))
+                fig_levels.add_trace(go.Scatter(x=x_range, y=bb_u, mode="lines",
+                    line=dict(color="rgba(255,165,0,0.25)", width=1), name="BB Upper", showlegend=True,
+                    legendgroup="bb", hoverinfo="skip"))
+                fig_levels.add_trace(go.Scatter(x=x_range, y=bb_l, mode="lines",
+                    line=dict(color="rgba(255,165,0,0.25)", width=1), name="BB Lower",
+                    fill="tonexty", fillcolor="rgba(255,165,0,0.04)",
+                    showlegend=False, legendgroup="bb", hoverinfo="skip"))
+                fig_levels.add_trace(go.Scatter(x=x_range, y=bb_m, mode="lines",
+                    line=dict(color="rgba(255,165,0,0.4)", width=1, dash="dot"),
+                    name="BB Mid", showlegend=False, legendgroup="bb", hoverinfo="skip"))
+
+            # --- Candlesticks ---
             fig_levels.add_trace(go.Candlestick(
                 x=list(range(len(chart_df))), open=chart_df["open"], high=chart_df["high"],
                 low=chart_df["low"], close=chart_df["close"], name="Price",
-                increasing_line_color="#00FF7F", decreasing_line_color="#FF6347"))
-            # Support lines
-            for i, s_val in enumerate(sr_data.get("supports",[])[:3]):
-                fig_levels.add_hline(y=s_val, line_dash="dash", line_color="#00FF7F",
-                    line_width=1.5, opacity=0.8 - i*0.2,
-                    annotation_text=f"S{i+1}: {fp(s_val)}", annotation_position="left",
-                    annotation_font_color="#00FF7F", annotation_font_size=10)
-            # Resistance lines
-            for i, r_val in enumerate(sr_data.get("resistances",[])[:3]):
-                fig_levels.add_hline(y=r_val, line_dash="dash", line_color="#FF6347",
-                    line_width=1.5, opacity=0.8 - i*0.2,
-                    annotation_text=f"R{i+1}: {fp(r_val)}", annotation_position="left",
-                    annotation_font_color="#FF6347", annotation_font_size=10)
-            # Fibonacci levels
-            fib_colors = {"0.236":"#FFD700","0.382":"#FFA500","0.5":"#FF69B4","0.618":"#9370DB","0.786":"#4169E1"}
-            for label, val in fib_data.get("fib_levels",{}).items():
-                for fk, fc in fib_colors.items():
-                    if fk in label:
-                        fig_levels.add_hline(y=val, line_dash="dot", line_color=fc,
-                            line_width=1, opacity=0.5,
-                            annotation_text=f"Fib {label}: {fp(val)}", annotation_position="right",
-                            annotation_font_color=fc, annotation_font_size=9)
-            # SL/TP levels if active signal
-            if sig in ("BUY","CTB","SELL","CTS") and sltp.get("sl",0) > 0:
-                fig_levels.add_hline(y=sltp["sl"], line_dash="dashdot", line_color="#FF0040",
-                    line_width=2, annotation_text=f"SL: {fp(sltp['sl'])}", annotation_position="left",
-                    annotation_font_color="#FF0040", annotation_font_size=10)
-                fig_levels.add_hline(y=sltp["tp1"], line_dash="dashdot", line_color="#00DD66",
-                    line_width=1.5, annotation_text=f"TP1: {fp(sltp['tp1'])}", annotation_position="left",
-                    annotation_font_color="#00DD66", annotation_font_size=10)
-                if sltp.get("tp2",0) > 0:
-                    fig_levels.add_hline(y=sltp["tp2"], line_dash="dashdot", line_color="#00FF7F",
-                        line_width=1.5, annotation_text=f"TP2: {fp(sltp['tp2'])}", annotation_position="left",
-                        annotation_font_color="#00FF7F", annotation_font_size=10)
-            # Bollinger Bands
-            if bb_data.get("bb_upper",0) > 0:
-                # Compute BB for chart range
-                from ta.volatility import BollingerBands as _BB
-                if len(detail_df) >= 20:
-                    _bbc = _BB(close=detail_df["close"], window=20, window_dev=2)
-                    bb_u = _bbc.bollinger_hband().tail(60).values
-                    bb_m = _bbc.bollinger_mavg().tail(60).values
-                    bb_l = _bbc.bollinger_lband().tail(60).values
-                    x_range = list(range(len(chart_df)))
-                    fig_levels.add_trace(go.Scatter(x=x_range, y=bb_u, mode="lines", line=dict(color="rgba(255,165,0,0.3)", width=1), name="BB Upper", showlegend=False))
-                    fig_levels.add_trace(go.Scatter(x=x_range, y=bb_l, mode="lines", line=dict(color="rgba(255,165,0,0.3)", width=1), name="BB Lower", fill="tonexty", fillcolor="rgba(255,165,0,0.05)", showlegend=False))
-                    fig_levels.add_trace(go.Scatter(x=x_range, y=bb_m, mode="lines", line=dict(color="rgba(255,165,0,0.5)", width=1, dash="dot"), name="BB Mid", showlegend=False))
+                increasing_line_color="#26A69A", decreasing_line_color="#EF5350",
+                increasing_fillcolor="#26A69A", decreasing_fillcolor="#EF5350"))
 
+            # Price range for y-axis
+            y_min = chart_df["low"].min()
+            y_max = chart_df["high"].max()
+            y_pad = (y_max - y_min) * 0.15
+            x_max = len(chart_df) - 1
+
+            # --- Support/Resistance zones ---
+            if show_sr:
+                supports = sr_data.get("supports",[])[:3]
+                resistances = sr_data.get("resistances",[])[:3]
+                zone_h = (y_max - y_min) * 0.008  # thin zone band
+
+                for i, s_val in enumerate(supports):
+                    opacity = 0.35 - i * 0.1
+                    # Zone band
+                    fig_levels.add_shape(type="rect", x0=-2, x1=x_max+2,
+                        y0=s_val - zone_h, y1=s_val + zone_h,
+                        fillcolor=f"rgba(0,221,102,{opacity})", line_width=0)
+                    # Line
+                    fig_levels.add_shape(type="line", x0=-2, x1=x_max+2,
+                        y0=s_val, y1=s_val,
+                        line=dict(color="#00DD66", width=1.5, dash="dash"))
+                    # Right-side label
+                    fig_levels.add_annotation(x=x_max+1, y=s_val, text=f"S{i+1} {fp(s_val)}",
+                        showarrow=False, xanchor="left", font=dict(color="#00DD66", size=10),
+                        bgcolor="rgba(0,221,102,0.12)", borderpad=3)
+
+                for i, r_val in enumerate(resistances):
+                    opacity = 0.35 - i * 0.1
+                    fig_levels.add_shape(type="rect", x0=-2, x1=x_max+2,
+                        y0=r_val - zone_h, y1=r_val + zone_h,
+                        fillcolor=f"rgba(239,83,80,{opacity})", line_width=0)
+                    fig_levels.add_shape(type="line", x0=-2, x1=x_max+2,
+                        y0=r_val, y1=r_val,
+                        line=dict(color="#EF5350", width=1.5, dash="dash"))
+                    fig_levels.add_annotation(x=x_max+1, y=r_val, text=f"R{i+1} {fp(r_val)}",
+                        showarrow=False, xanchor="left", font=dict(color="#EF5350", size=10),
+                        bgcolor="rgba(239,83,80,0.12)", borderpad=3)
+
+                # Current price marker
+                fig_levels.add_annotation(x=x_max+1, y=price,
+                    text=f"▸ {fp(price)}", showarrow=False, xanchor="left",
+                    font=dict(color="white", size=11, family="monospace"),
+                    bgcolor="rgba(255,255,255,0.1)", borderpad=3)
+
+            # --- Fibonacci levels (left side labels, subtle lines) ---
+            if show_fib:
+                fib_styles = {
+                    "0.236": ("#FFD700", "23.6%"),
+                    "0.382": ("#FFA500", "38.2%"),
+                    "0.5":   ("#FF69B4", "50%"),
+                    "0.618": ("#9370DB", "61.8% ★"),
+                    "0.786": ("#6495ED", "78.6%"),
+                }
+                for label, val in fib_data.get("fib_levels",{}).items():
+                    for fk, (fc, short_label) in fib_styles.items():
+                        if fk in label:
+                            fig_levels.add_shape(type="line", x0=-2, x1=x_max+2,
+                                y0=val, y1=val,
+                                line=dict(color=fc, width=1, dash="dot"), opacity=0.4)
+                            fig_levels.add_annotation(x=-1, y=val,
+                                text=f"Fib {short_label}", showarrow=False, xanchor="right",
+                                font=dict(color=fc, size=9),
+                                bgcolor=f"rgba(0,0,0,0.5)", borderpad=2)
+
+            # --- SL/TP levels (prominent, with zones) ---
+            if show_sltp and sig in ("BUY","CTB","SELL","CTS") and sltp.get("sl",0) > 0:
+                is_buy = sig in ("BUY","CTB")
+                sl_val = sltp["sl"]; tp1_val = sltp["tp1"]; tp2_val = sltp.get("tp2",0)
+
+                # SL zone
+                sl_zone = (y_max - y_min) * 0.012
+                fig_levels.add_shape(type="rect", x0=-2, x1=x_max+2,
+                    y0=sl_val - sl_zone, y1=sl_val + sl_zone,
+                    fillcolor="rgba(255,0,64,0.15)", line_width=0)
+                fig_levels.add_shape(type="line", x0=-2, x1=x_max+2,
+                    y0=sl_val, y1=sl_val,
+                    line=dict(color="#FF0040", width=2, dash="dashdot"))
+                fig_levels.add_annotation(x=x_max+1, y=sl_val,
+                    text=f"🛑 SL {fp(sl_val)}", showarrow=False, xanchor="left",
+                    font=dict(color="#FF0040", size=11, family="monospace"),
+                    bgcolor="rgba(255,0,64,0.2)", borderpad=4)
+
+                # TP1
+                fig_levels.add_shape(type="line", x0=-2, x1=x_max+2,
+                    y0=tp1_val, y1=tp1_val,
+                    line=dict(color="#00DD66", width=1.5, dash="dashdot"))
+                fig_levels.add_annotation(x=x_max+1, y=tp1_val,
+                    text=f"🎯 TP1 {fp(tp1_val)}", showarrow=False, xanchor="left",
+                    font=dict(color="#00DD66", size=10),
+                    bgcolor="rgba(0,221,102,0.15)", borderpad=3)
+
+                # TP2
+                if tp2_val > 0:
+                    fig_levels.add_shape(type="line", x0=-2, x1=x_max+2,
+                        y0=tp2_val, y1=tp2_val,
+                        line=dict(color="#00FF7F", width=1.5, dash="dashdot"))
+                    fig_levels.add_annotation(x=x_max+1, y=tp2_val,
+                        text=f"🎯 TP2 {fp(tp2_val)}", showarrow=False, xanchor="left",
+                        font=dict(color="#00FF7F", size=10),
+                        bgcolor="rgba(0,255,127,0.15)", borderpad=3)
+
+                # Entry line
+                fig_levels.add_shape(type="line", x0=-2, x1=x_max+2,
+                    y0=price, y1=price,
+                    line=dict(color="rgba(255,255,255,0.4)", width=1, dash="dot"))
+
+            # --- Layout ---
             fig_levels.update_layout(
-                title=dict(text=f"📊 {sel} — Key Levels (4h)", font=dict(size=14, color="white"), x=0.5),
-                template="plotly_dark", paper_bgcolor="#0E1117", plot_bgcolor="#0E1117", height=450,
-                xaxis=dict(showticklabels=False, showgrid=False, rangeslider=dict(visible=False)),
-                yaxis=dict(title="Price", gridcolor="rgba(255,255,255,0.05)", side="right"),
-                showlegend=False, margin=dict(l=10, r=80, t=40, b=10))
+                title=dict(text=f"{sel} — Key Levels (4h, letzte 60 Kerzen)",
+                    font=dict(size=13, color="#aaa"), x=0.5),
+                template="plotly_dark",
+                paper_bgcolor="#0E1117", plot_bgcolor="#0E1117",
+                height=520,
+                xaxis=dict(
+                    showticklabels=False, showgrid=False,
+                    rangeslider=dict(visible=False),
+                    range=[-3, x_max + 8],  # extra space for right labels
+                ),
+                yaxis=dict(
+                    title=None,
+                    gridcolor="rgba(255,255,255,0.03)",
+                    side="right",
+                    tickfont=dict(size=10, color="#666"),
+                    range=[y_min - y_pad, y_max + y_pad],
+                ),
+                showlegend=show_bb,  # only show legend when BB is on
+                legend=dict(
+                    orientation="h", yanchor="top", y=1.02, x=0.5, xanchor="center",
+                    font=dict(size=10, color="#888"), bgcolor="rgba(0,0,0,0)"),
+                margin=dict(l=60, r=130, t=45, b=15),
+            )
             st.plotly_chart(fig_levels, use_container_width=True)
 
         # =============================================
