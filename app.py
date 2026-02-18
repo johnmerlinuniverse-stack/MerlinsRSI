@@ -280,11 +280,14 @@ def render_rows_with_chart(dataframe, tab_key, max_rows=60):
 
 def tv_iframe(sym, h=420):
     pair=f"BINANCE:{sym}USDT"
+    # RSI as simple string works. Multiple studies: repeat &studies= param
     return (f'<div style="height:{h}px;background:#131722;border-radius:0 0 8px 8px;overflow:hidden;">'
             f'<iframe src="https://s.tradingview.com/widgetembed/?frameElementId=tv_{sym}'
             f'&symbol={pair}&interval=240&hidesidetoolbar=0&symboledit=1&saveimage=0'
             f'&toolbarbg=131722&theme=dark&style=1&timezone=Etc%2FUTC&withdateranges=1'
             f'&allow_symbol_change=1'
+            f'&studies=RSI%40tv-basicstudies'
+            f'&studies=PivotPointsStandard%40tv-basicstudies'
             f'" style="width:100%;height:{h}px;border:none;"></iframe></div>')
 
 # ============================================================
