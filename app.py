@@ -280,14 +280,32 @@ def render_rows_with_chart(dataframe, tab_key, max_rows=60):
 
 def tv_iframe(sym, h=420):
     pair=f"BINANCE:{sym}USDT"
-    # Multiple studies: comma-separated in single &studies= param
-    return (f'<div style="height:{h}px;background:#131722;border-radius:0 0 8px 8px;overflow:hidden;">'
-            f'<iframe src="https://s.tradingview.com/widgetembed/?frameElementId=tv_{sym}'
-            f'&symbol={pair}&interval=240&hidesidetoolbar=0&symboledit=1&saveimage=0'
-            f'&toolbarbg=131722&theme=dark&style=1&timezone=Etc%2FUTC&withdateranges=1'
-            f'&allow_symbol_change=1'
-            f'&studies=RSI%40tv-basicstudies%2CPivotPointsStandard%40tv-basicstudies'
-            f'" style="width:100%;height:{h}px;border:none;"></iframe></div>')
+    uid=f"tv_{sym}_{h}"
+    return f'''<div id="{uid}" style="height:{h}px;background:#131722;border-radius:0 0 8px 8px;overflow:hidden;"></div>
+<script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
+<script type="text/javascript">
+new TradingView.widget({{
+  "container_id": "{uid}",
+  "width": "100%",
+  "height": {h},
+  "symbol": "{pair}",
+  "interval": "240",
+  "timezone": "Etc/UTC",
+  "theme": "dark",
+  "style": "1",
+  "locale": "de_DE",
+  "toolbar_bg": "#131722",
+  "enable_publishing": false,
+  "hide_side_toolbar": false,
+  "allow_symbol_change": true,
+  "withdateranges": true,
+  "save_image": false,
+  "studies": [
+    "RSI@tv-basicstudies",
+    "PivotPointsStandard@tv-basicstudies"
+  ]
+}});
+</script>'''
 
 # ============================================================
 # HEADER
