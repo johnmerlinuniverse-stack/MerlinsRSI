@@ -428,23 +428,201 @@ with tab_conf:
         st.markdown(f'<div style="background:#1a1a2e;border-radius:8px;padding:10px 14px;margin:4px 0;"><div style="display:flex;justify-content:space-between;"><b style="color:white;">{r["symbol"]}</b><span style="color:#FF6347;font-weight:bold;">{r.get("confluence_rec","WAIT")} ({r["score"]})</span></div><div style="background:#2a2a4a;border-radius:4px;height:6px;margin-top:6px;"><div style="background:linear-gradient(90deg,#FF6347,#FF0000);height:6px;width:{min(s,100)}%;border-radius:4px;"></div></div><div style="font-size:11px;color:#888;margin-top:4px;">RSI 4h: {r.get("rsi_4h",50):.1f} | MACD: {r.get("macd_trend","—")} | Vol: {r.get("vol_trend","—")}</div></div>', unsafe_allow_html=True)
 
 # ============================================================
-# TAB 5: DETAIL + TradingView
+# TAB 5: DETAIL — Complete Analysis Dashboard
 # ============================================================
 with tab_det:
     sel=st.selectbox("Select Coin",df["symbol"].tolist(),key="dc")
     if sel:
         c=df[df["symbol"]==sel].iloc[0]; sig=c.get("signal","WAIT"); sc=sig_color(sig); im=c.get("coin_image","")
-        st.markdown(f'<div style="background:#1a1a2e;border-radius:10px;padding:16px;margin-bottom:12px;"><div style="display:flex;flex-wrap:wrap;align-items:center;gap:14px;">{icon(im)}<h2 style="margin:0;color:white;">{sel}</h2><span style="color:#888;">{c.get("coin_name",sel)}</span><span class="cr">#{int(c.get("rank",999))}</span><span style="font-size:20px;color:white;font-weight:bold;">{fp(c["price"])}</span><span class="{cc(c.get("change_24h",0))}" style="font-size:16px;">{c.get("change_24h",0):+.2f}%</span><span style="color:{sc};font-weight:bold;font-size:16px;">Now: {sig}</span><span style="color:#888;">RSI (4h): <b style="color:{rsc(c.get("rsi_4h",50))};">{c.get("rsi_4h",50):.2f}</b></span><span style="color:#888;">RSI (1D): <b>{c.get("rsi_1D",50):.2f}</b></span></div></div>', unsafe_allow_html=True)
+        price=c["price"]; r4=c.get("rsi_4h",50); r1d=c.get("rsi_1D",50)
+
+        # Header
+        st.markdown(f'<div style="background:#1a1a2e;border-radius:10px;padding:16px;margin-bottom:12px;"><div style="display:flex;flex-wrap:wrap;align-items:center;gap:14px;">{icon(im)}<h2 style="margin:0;color:white;">{sel}</h2><span style="color:#888;">{c.get("coin_name",sel)}</span><span class="cr">#{int(c.get("rank",999))}</span><span style="font-size:20px;color:white;font-weight:bold;">{fp(price)}</span><span class="{cc(c.get("change_24h",0))}" style="font-size:16px;">{c.get("change_24h",0):+.2f}%</span><span style="color:{sc};font-weight:bold;font-size:16px;">Now: {sig}</span></div></div>', unsafe_allow_html=True)
+
+        # TradingView Chart
         st.components.v1.html(tv_iframe(sel,500),height=520)
-        rcs=[col for col in df.columns if col.startswith("rsi_") and "prev" not in col and "closes" not in col]
-        gc=st.columns(len(rcs))
-        for i,rcl in enumerate(rcs):
-            v=c.get(rcl,50)
-            with gc[i]:
-                fg=go.Figure(go.Indicator(mode="gauge+number",value=v,title={"text":rcl.replace("rsi_","RSI "),"font":{"size":14,"color":"white"}},number={"font":{"size":22,"color":"white"}},gauge={"axis":{"range":[0,100]},"bar":{"color":"#FFD700"},"bgcolor":"#1a1a2e","steps":[{"range":[0,30],"color":"rgba(0,255,127,0.2)"},{"range":[30,70],"color":"rgba(255,215,0,0.1)"},{"range":[70,100],"color":"rgba(255,99,71,0.2)"}]}))
-                fg.update_layout(template="plotly_dark",paper_bgcolor="#0E1117",height=180,margin=dict(l=20,r=20,t=40,b=10))
-                st.plotly_chart(fg,use_container_width=True)
-        st.markdown(f"| Indicator | Value |\n|---|---|\n| MACD | **{c.get('macd_trend','—')}** (hist: {c.get('macd_histogram',0):.4f}) |\n| Stoch RSI | K: **{c.get('stoch_rsi_k',50):.1f}** / D: **{c.get('stoch_rsi_d',50):.1f}** |\n| Volume | **{c.get('vol_trend','—')}** ({c.get('vol_ratio',1.0):.2f}x) |\n| OBV | **{c.get('obv_trend','—')}** |")
+
+        # ---- COMPUTE ON-DEMAND INDICATORS ----
+        from indicators import (calculate_ema_crosses, calculate_bollinger, calculate_atr,
+            calculate_support_resistance, calculate_fibonacci, calculate_btc_correlation,
+            calculate_sl_tp, calculate_price_range, multi_tf_rsi_summary)
+
+        # Fetch klines for detail analysis (4h primary)
+        detail_df = fetch_klines_smart(sel, "4h")
+        detail_1d = fetch_klines_smart(sel, "1d")
+        btc_df = fetch_klines_smart("BTC", "4h")
+
+        # Compute all
+        ema_data = calculate_ema_crosses(detail_df) if not detail_df.empty else {}
+        bb_data = calculate_bollinger(detail_df) if not detail_df.empty else {}
+        atr_data = calculate_atr(detail_df) if not detail_df.empty else {}
+        sr_data = calculate_support_resistance(detail_df) if not detail_df.empty else {"supports":[],"resistances":[],"nearest_support":0,"nearest_resistance":0}
+        fib_data = calculate_fibonacci(detail_df) if not detail_df.empty else {"fib_levels":{},"fib_zone":"N/A"}
+        btc_corr = calculate_btc_correlation(detail_df, btc_df) if not detail_df.empty else {"correlation":0,"corr_label":"N/A"}
+        pr_data = calculate_price_range(detail_df) if not detail_df.empty else {}
+        sltp = calculate_sl_tp(price, atr_data.get("atr",0), sig, sr_data)
+
+        # Multi-TF RSI
+        rsi_vals = {}
+        for tf in tf_to_scan:
+            rsi_vals[tf] = c.get(f"rsi_{tf}", None)
+        # Also compute 1h and 1W if not in scan
+        for extra_tf, extra_int in [("1h","1h"),("1W","1w")]:
+            if extra_tf not in rsi_vals:
+                edf = fetch_klines_smart(sel, extra_int)
+                if not edf.empty and len(edf) >= 15:
+                    from ta.momentum import RSIIndicator as _RSI
+                    rs = _RSI(close=edf["close"],window=14).rsi().dropna()
+                    rsi_vals[extra_tf] = round(float(rs.iloc[-1]),2) if len(rs)>=1 else None
+                else: rsi_vals[extra_tf] = None
+        mtf = multi_tf_rsi_summary(rsi_vals)
+
+        # =============================================
+        # SECTION 1: Multi-TF RSI Traffic Light
+        # =============================================
+        st.markdown("### 🚦 Multi-Timeframe RSI")
+        tf_cols = st.columns(len(rsi_vals))
+        for i, (tf, val) in enumerate(rsi_vals.items()):
+            with tf_cols[i]:
+                if val is None:
+                    st.markdown(f"<div style='text-align:center;background:#1a1a2e;border-radius:8px;padding:10px;'><div style='color:#555;font-size:12px;'>{tf}</div><div style='color:#555;font-size:18px;'>—</div></div>", unsafe_allow_html=True)
+                else:
+                    if val <= 30: bg, tc = "rgba(0,255,0,0.15)", "#00FF00"
+                    elif val <= 42: bg, tc = "rgba(0,255,127,0.1)", "#00FF7F"
+                    elif val >= 70: bg, tc = "rgba(255,0,64,0.15)", "#FF0040"
+                    elif val >= 58: bg, tc = "rgba(255,99,71,0.1)", "#FF6347"
+                    else: bg, tc = "rgba(255,215,0,0.08)", "#FFD700"
+                    # Arrow direction
+                    prev = c.get(f"rsi_prev_{tf}", val)
+                    arrow = "↑" if val > prev else ("↓" if val < prev else "→")
+                    st.markdown(f"<div style='text-align:center;background:{bg};border:1px solid {tc}33;border-radius:8px;padding:10px;'><div style='color:#888;font-size:12px;'>{tf}</div><div style='color:{tc};font-size:22px;font-weight:bold;'>{val:.1f} {arrow}</div></div>", unsafe_allow_html=True)
+
+        # Confluence verdict
+        conf_color = {"STRONG_BUY":"#00FF00","LEAN_BUY":"#00FF7F","STRONG_SELL":"#FF0040","LEAN_SELL":"#FF6347"}.get(mtf["confluence"],"#FFD700")
+        st.markdown(f"<div style='text-align:center;padding:6px;'><span style='color:{conf_color};font-weight:bold;font-size:14px;'>TF Confluence: {mtf['confluence']}</span> <span style='color:#888;'>({mtf['bullish_count']} bullish / {mtf['bearish_count']} bearish of {mtf['total']} TFs)</span></div>", unsafe_allow_html=True)
+
+        # =============================================
+        # SECTION 2: EMA Crosses + Bollinger + Volatility
+        # =============================================
+        st.markdown("### 📐 Trend & Volatility")
+        t1, t2, t3 = st.columns(3)
+
+        with t1:
+            st.markdown("**EMA Crossovers**")
+            def ema_badge(cross):
+                if cross in ("GOLDEN","BULLISH"): return f'<span style="color:#00FF7F;">🟢 {cross}</span>'
+                elif cross in ("DEATH","BEARISH"): return f'<span style="color:#FF6347;">🔴 {cross}</span>'
+                return f'<span style="color:#FFD700;">{cross}</span>'
+            st.markdown(f"EMA 9/21: {ema_badge(ema_data.get('cross_9_21','N/A'))}", unsafe_allow_html=True)
+            st.markdown(f"EMA 50/200: {ema_badge(ema_data.get('cross_50_200','N/A'))}", unsafe_allow_html=True)
+            pve = ema_data.get('price_vs_ema21',0)
+            st.markdown(f"Price vs EMA21: <span class='{cc(pve)}'>{pve:+.2f}%</span>", unsafe_allow_html=True)
+            if ema_data.get('price_vs_ema200') is not None:
+                pv200 = ema_data.get('price_vs_ema200',0)
+                st.markdown(f"Price vs EMA200: <span class='{cc(pv200)}'>{pv200:+.2f}%</span>", unsafe_allow_html=True)
+
+        with t2:
+            st.markdown("**Bollinger Bands**")
+            bbp = bb_data.get("bb_pct",50)
+            bbpos = bb_data.get("bb_position","MIDDLE")
+            if bbp >= 80: bbc = "#FF6347"
+            elif bbp <= 20: bbc = "#00FF7F"
+            else: bbc = "#FFD700"
+            st.markdown(f"Position: <span style='color:{bbc};font-weight:bold;'>{bbp:.0f}%</span> ({bbpos})", unsafe_allow_html=True)
+            st.markdown(f"Width: **{bb_data.get('bb_width',0):.2f}%**")
+            st.markdown(f"Upper: {fp(bb_data.get('bb_upper',0))}")
+            st.markdown(f"Middle: {fp(bb_data.get('bb_middle',0))}")
+            st.markdown(f"Lower: {fp(bb_data.get('bb_lower',0))}")
+
+        with t3:
+            st.markdown("**Volatility (ATR)**")
+            vol = atr_data.get("volatility","LOW")
+            vc = {"VERY_HIGH":"#FF0040","HIGH":"#FF6347","MEDIUM":"#FFD700","LOW":"#00FF7F"}.get(vol,"#888")
+            st.markdown(f"ATR: **{fp(atr_data.get('atr',0))}**")
+            st.markdown(f"ATR %: <span style='color:{vc};font-weight:bold;'>{atr_data.get('atr_pct',0):.2f}%</span> ({vol})", unsafe_allow_html=True)
+            st.markdown(f"BTC Correlation: **{btc_corr.get('correlation',0):.2f}** ({btc_corr.get('corr_label','N/A')})")
+
+        # =============================================
+        # SECTION 3: Support/Resistance + Fibonacci
+        # =============================================
+        st.markdown("### 🎯 Key Levels")
+        l1, l2 = st.columns(2)
+
+        with l1:
+            st.markdown("**Support & Resistance**")
+            for r_val in sr_data.get("resistances",[])[:3]:
+                dist = (r_val/price-1)*100
+                st.markdown(f'<span style="color:#FF6347;">R: {fp(r_val)}</span> <span style="color:#888;">({dist:+.2f}%)</span>', unsafe_allow_html=True)
+            st.markdown(f'<span style="color:white;font-weight:bold;">▸ Current: {fp(price)}</span>', unsafe_allow_html=True)
+            for s_val in sr_data.get("supports",[])[:3]:
+                dist = (s_val/price-1)*100
+                st.markdown(f'<span style="color:#00FF7F;">S: {fp(s_val)}</span> <span style="color:#888;">({dist:+.2f}%)</span>', unsafe_allow_html=True)
+
+        with l2:
+            st.markdown("**Fibonacci Retracement**")
+            st.markdown(f"Zone: **{fib_data.get('fib_zone','N/A')}**")
+            for label, val in fib_data.get("fib_levels",{}).items():
+                dist = (val/price-1)*100
+                active = "◀" if abs(dist) < 2 else ""
+                st.markdown(f"`{label}` {fp(val)} ({dist:+.2f}%) {active}")
+
+        # =============================================
+        # SECTION 4: Price Range Position
+        # =============================================
+        st.markdown("### 📊 Price Range")
+        pr1, pr2 = st.columns(2)
+        for col, label in [(pr1,"7d"),(pr2,"30d")]:
+            with col:
+                hi = pr_data.get(f"{label}_high",0)
+                lo = pr_data.get(f"{label}_low",0)
+                pos = pr_data.get(f"{label}_position",50)
+                rng = pr_data.get(f"{label}_range_pct",0)
+                pc = "#00FF7F" if pos < 30 else ("#FF6347" if pos > 70 else "#FFD700")
+                st.markdown(f"**{label} Range** ({rng:.1f}%)")
+                st.markdown(f"High: {fp(hi)} → Low: {fp(lo)}")
+                st.markdown(f'<div style="background:#2a2a4a;border-radius:4px;height:12px;position:relative;margin:4px 0;">'
+                    f'<div style="position:absolute;left:{pos}%;top:-2px;width:4px;height:16px;background:{pc};border-radius:2px;"></div>'
+                    f'<div style="background:linear-gradient(90deg,#00FF7F33,#FFD70033,#FF634733);height:12px;border-radius:4px;"></div></div>'
+                    f'<span style="color:{pc};font-weight:bold;">{pos:.0f}%</span> <span style="color:#888;">position in range</span>', unsafe_allow_html=True)
+
+        # =============================================
+        # SECTION 5: SL / TP Recommendations
+        # =============================================
+        st.markdown("### 🛡️ Risk Management (ATR-based)")
+        if sig in ("BUY","CTB","SELL","CTS"):
+            is_buy = sig in ("BUY","CTB")
+            sl_c = "#FF6347" if is_buy else "#00FF7F"
+            tp_c = "#00FF7F" if is_buy else "#FF6347"
+            sl_dist = (sltp["sl"]/price-1)*100
+            tp1_dist = (sltp["tp1"]/price-1)*100
+            tp2_dist = (sltp["tp2"]/price-1)*100 if sltp["tp2"] else 0
+
+            st.markdown(f'<div style="background:#1a1a2e;border-radius:10px;padding:14px;display:flex;flex-wrap:wrap;gap:20px;justify-content:space-around;">'
+                f'<div style="text-align:center;"><div style="color:#888;font-size:11px;">Stop-Loss</div><div style="color:{sl_c};font-size:18px;font-weight:bold;">{fp(sltp["sl"])}</div><div style="color:{sl_c};font-size:12px;">{sl_dist:+.2f}%</div></div>'
+                f'<div style="text-align:center;"><div style="color:#888;font-size:11px;">Entry</div><div style="color:white;font-size:18px;font-weight:bold;">{fp(price)}</div><div style="color:#888;font-size:12px;">current</div></div>'
+                f'<div style="text-align:center;"><div style="color:#888;font-size:11px;">TP 1 (1.5x ATR)</div><div style="color:{tp_c};font-size:18px;font-weight:bold;">{fp(sltp["tp1"])}</div><div style="color:{tp_c};font-size:12px;">{tp1_dist:+.2f}%</div></div>'
+                f'<div style="text-align:center;"><div style="color:#888;font-size:11px;">TP 2 (S/R)</div><div style="color:{tp_c};font-size:18px;font-weight:bold;">{fp(sltp["tp2"])}</div><div style="color:{tp_c};font-size:12px;">{tp2_dist:+.2f}%</div></div>'
+                f'<div style="text-align:center;"><div style="color:#888;font-size:11px;">Risk/Reward</div><div style="color:#FFD700;font-size:18px;font-weight:bold;">{sltp["risk_reward"]:.2f}</div></div>'
+                f'</div>', unsafe_allow_html=True)
+        else:
+            st.info("SL/TP only available when signal is BUY, SELL, CTB or CTS.")
+
+        # =============================================
+        # SECTION 6: Indicator Summary Table
+        # =============================================
+        st.markdown("### 📋 Indicators Summary")
+        st.markdown(f"""| Indicator | Value | Signal |
+|---|---|---|
+| MACD | {c.get('macd_trend','—')} (hist: {c.get('macd_histogram',0):.4f}) | {'🟢' if c.get('macd_trend')=='BULLISH' else ('🔴' if c.get('macd_trend')=='BEARISH' else '🟡')} |
+| Stoch RSI | K: {c.get('stoch_rsi_k',50):.1f} / D: {c.get('stoch_rsi_d',50):.1f} | {'🟢' if c.get('stoch_rsi_k',50)<20 else ('🔴' if c.get('stoch_rsi_k',50)>80 else '🟡')} |
+| Volume | {c.get('vol_trend','—')} ({c.get('vol_ratio',1.0):.2f}x avg) | {'🟢' if c.get('obv_trend')=='BULLISH' else ('🔴' if c.get('obv_trend')=='BEARISH' else '🟡')} |
+| EMA 9/21 | {ema_data.get('cross_9_21','N/A')} | {'🟢' if ema_data.get('cross_9_21') in ('GOLDEN','BULLISH') else ('🔴' if ema_data.get('cross_9_21') in ('DEATH','BEARISH') else '🟡')} |
+| EMA 50/200 | {ema_data.get('cross_50_200','N/A')} | {'🟢' if ema_data.get('cross_50_200') in ('GOLDEN','BULLISH') else ('🔴' if ema_data.get('cross_50_200') in ('DEATH','BEARISH') else '🟡')} |
+| Bollinger | {bb_data.get('bb_position','—')} ({bb_data.get('bb_pct',50):.0f}%) | {'🟢' if bb_data.get('bb_pct',50)<20 else ('🔴' if bb_data.get('bb_pct',50)>80 else '🟡')} |
+| ATR Volatility | {atr_data.get('volatility','—')} ({atr_data.get('atr_pct',0):.2f}%) | {'⚠️' if atr_data.get('volatility') in ('HIGH','VERY_HIGH') else '✅'} |
+| BTC Correlation | {btc_corr.get('correlation',0):.2f} ({btc_corr.get('corr_label','N/A')}) | {'🔗' if abs(btc_corr.get('correlation',0))>0.5 else '🔓'} |""")
+
+        st.caption("⚠️ DYOR — Dies ist keine Finanzberatung. Alle Berechnungen basieren auf historischen Daten.")
 
 st.markdown("---")
 st.markdown(f"<div style='text-align:center;color:#555;font-size:11px;'>🧙‍♂️ Merlin | {len(coins_to_scan)}×{len(tf_to_scan)}TF | {exn} | BUY≤42 SELL≥58 | DYOR!</div>",unsafe_allow_html=True)
