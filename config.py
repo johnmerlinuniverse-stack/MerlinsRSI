@@ -57,20 +57,21 @@ CRYPTOWAVES_COINS = [
     "BTC", "ETH", "XRP", "BNB", "SOL", "TRX", "DOGE", "ADA", "LINK", "AVAX",
     # Top 11-30
     "XLM", "HBAR", "DOT", "BCH", "LTC", "SHIB", "UNI", "TON", "NEAR",
-    "AAVE", "ZEC", "SUI",
+    "AAVE", "ZEC", "SUI", "USD1", "WLFI",
     # Top 31-60
     "PEPE", "POL", "WLD", "ATOM", "ENA", "ONDO", "QNT", "RENDER",
-    "FIL", "VET", "ETC", "TAO", "INJ", "STX", "ICP",
+    "FIL", "VET", "ETC", "TAO", "INJ", "STX", "ICP", "PAXG",
     # Top 61-100
     "ARB", "OP", "FET", "SEI", "JUP", "BONK", "FLOKI", "IMX",
     "APT", "ALGO", "GRT", "THETA", "SAND", "MANA", "AXS",
     "GALA", "CRV", "DASH", "LDO", "JASMY", "IOTA",
-    "PENGU", "VIRTUAL", "PUMP", "MORPHO",
-    # Popular altcoins beyond Top 100 (high volume / trending)
+    "PENGU", "VIRTUAL", "PUMP", "MORPHO", "NEXO", "TUSD",
+    # Popular altcoins beyond Top 100
     "PYTH", "SUN", "TIA", "CFX", "ENS", "WIF", "COMP", "DEXE",
     "LUNC", "STRK", "PENDLE", "ETHFI", "CHZ", "XTZ", "BAT",
-    "ZRO", "NEXO", "CAKE", "TRUMP", "PAXG", "GNO", "CVX",
-    "ZK", "GLM", "KITE", "AWE", "SKY",
+    "ZRO", "CAKE", "TRUMP", "GNO", "CVX", "RLUSD", "FDUSD",
+    "ZK", "GLM", "KITE", "AWE", "SKY", "RAY", "SYRUP", "BARD",
+    "DCR", "JST", "ONT", "FF", "KAIA", "NEO", "TWT",
     # Stablecoins (for reference)
     "USDC", "USDE",
 ]
@@ -140,6 +141,11 @@ COINGECKO_ID_MAP = {
     "CAKE": "pancakeswap-token", "GNO": "gnosis", "CVX": "convex-finance",
     "MORPHO": "morpho", "POL": "polygon-ecosystem-token",
     "USDC": "usd-coin", "USDE": "ethena-usde",
+    "TUSD": "true-usd", "RAY": "raydium", "USD1": "usd1-wlfi",
+    "SYRUP": "maple-finance", "BARD": "bard-ai", "WLFI": "world-liberty-financial",
+    "RLUSD": "ripple-usd", "FDUSD": "first-digital-usd", "DCR": "decred",
+    "JST": "just", "ONT": "ontology", "FF": "forefront", "KAIA": "kaia",
+    "NEO": "neo", "TWT": "trust-wallet-token",
 }
 
 # ============================================================
