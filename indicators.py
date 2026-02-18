@@ -296,124 +296,259 @@ def generate_confluence_signal(
     volume_data: dict,
     smc_data: dict = None,
 ) -> dict:
-    """
-    Generate a confluence-based signal combining multiple indicators.
-    Returns signal strength (-100 to +100) and recommendation.
-    
-    Scoring:
-    - RSI 4h: -30 to +30
-    - RSI 1D: -20 to +20
-    - MACD: -20 to +20
-    - Volume: -15 to +15
-    - SMC: -15 to +15
-    """
     score = 0
     reasons = []
-    
-    # --- RSI 4H scoring (weight: 30) ---
-    if rsi_4h <= RSI_STRONG_OVERSOLD:
-        score += 30
-        reasons.append(f"RSI 4h extremely oversold ({rsi_4h})")
-    elif rsi_4h <= RSI_OVERSOLD:
-        score += 20
-        reasons.append(f"RSI 4h oversold ({rsi_4h})")
-    elif rsi_4h <= 45:
-        score += 10
-        reasons.append(f"RSI 4h approaching oversold ({rsi_4h})")
-    elif rsi_4h >= RSI_STRONG_OVERBOUGHT:
-        score -= 30
-        reasons.append(f"RSI 4h extremely overbought ({rsi_4h})")
-    elif rsi_4h >= RSI_OVERBOUGHT:
-        score -= 20
-        reasons.append(f"RSI 4h overbought ({rsi_4h})")
-    elif rsi_4h >= 60:
-        score -= 10
-        reasons.append(f"RSI 4h approaching overbought ({rsi_4h})")
-    
-    # --- RSI 1D scoring (weight: 20) ---
-    if rsi_1d <= RSI_STRONG_OVERSOLD:
-        score += 20
-        reasons.append(f"RSI 1D extremely oversold ({rsi_1d})")
-    elif rsi_1d <= RSI_OVERSOLD:
-        score += 15
-        reasons.append(f"RSI 1D oversold ({rsi_1d})")
-    elif rsi_1d >= RSI_STRONG_OVERBOUGHT:
-        score -= 20
-        reasons.append(f"RSI 1D extremely overbought ({rsi_1d})")
-    elif rsi_1d >= RSI_OVERBOUGHT:
-        score -= 15
-        reasons.append(f"RSI 1D overbought ({rsi_1d})")
-    
-    # --- MACD scoring (weight: 20) ---
+    if rsi_4h <= RSI_STRONG_OVERSOLD: score += 30; reasons.append(f"RSI 4h extremely oversold ({rsi_4h})")
+    elif rsi_4h <= RSI_OVERSOLD: score += 20; reasons.append(f"RSI 4h oversold ({rsi_4h})")
+    elif rsi_4h <= 45: score += 10; reasons.append(f"RSI 4h approaching oversold ({rsi_4h})")
+    elif rsi_4h >= RSI_STRONG_OVERBOUGHT: score -= 30; reasons.append(f"RSI 4h extremely overbought ({rsi_4h})")
+    elif rsi_4h >= RSI_OVERBOUGHT: score -= 20; reasons.append(f"RSI 4h overbought ({rsi_4h})")
+    elif rsi_4h >= 60: score -= 10; reasons.append(f"RSI 4h approaching overbought ({rsi_4h})")
+    if rsi_1d <= RSI_STRONG_OVERSOLD: score += 20; reasons.append(f"RSI 1D extremely oversold ({rsi_1d})")
+    elif rsi_1d <= RSI_OVERSOLD: score += 15; reasons.append(f"RSI 1D oversold ({rsi_1d})")
+    elif rsi_1d >= RSI_STRONG_OVERBOUGHT: score -= 20; reasons.append(f"RSI 1D extremely overbought ({rsi_1d})")
+    elif rsi_1d >= RSI_OVERBOUGHT: score -= 15; reasons.append(f"RSI 1D overbought ({rsi_1d})")
     if macd_data["trend"] == "BULLISH":
-        score += 15
-        if macd_data["histogram"] > 0:
-            score += 5
-            reasons.append("MACD bullish with growing histogram")
-        else:
-            reasons.append("MACD bullish")
+        score += 15 + (5 if macd_data["histogram"] > 0 else 0)
+        reasons.append("MACD bullish" + (" with growing histogram" if macd_data["histogram"] > 0 else ""))
     elif macd_data["trend"] == "BEARISH":
-        score -= 15
-        if macd_data["histogram"] < 0:
-            score -= 5
-            reasons.append("MACD bearish with growing histogram")
-        else:
-            reasons.append("MACD bearish")
-    
-    # --- Volume scoring (weight: 15) ---
-    if volume_data["vol_trend"] == "HIGH" and volume_data["obv_trend"] == "BULLISH":
-        score += 15
-        reasons.append("High volume with bullish OBV")
-    elif volume_data["vol_trend"] == "HIGH" and volume_data["obv_trend"] == "BEARISH":
-        score -= 15
-        reasons.append("High volume with bearish OBV")
-    elif volume_data["obv_trend"] == "BULLISH":
-        score += 8
-        reasons.append("Bullish OBV trend")
-    elif volume_data["obv_trend"] == "BEARISH":
-        score -= 8
-        reasons.append("Bearish OBV trend")
-    
-    # --- SMC scoring (weight: 15) ---
+        score -= 15 + (5 if macd_data["histogram"] < 0 else 0)
+        reasons.append("MACD bearish" + (" with growing histogram" if macd_data["histogram"] < 0 else ""))
+    if volume_data["vol_trend"] == "HIGH" and volume_data["obv_trend"] == "BULLISH": score += 15; reasons.append("High volume bullish OBV")
+    elif volume_data["vol_trend"] == "HIGH" and volume_data["obv_trend"] == "BEARISH": score -= 15; reasons.append("High volume bearish OBV")
+    elif volume_data["obv_trend"] == "BULLISH": score += 8; reasons.append("Bullish OBV")
+    elif volume_data["obv_trend"] == "BEARISH": score -= 8; reasons.append("Bearish OBV")
     if smc_data:
-        ob_signal = smc_data.get("ob_signal", "NONE")
-        fvg_signal = smc_data.get("fvg_signal", "BALANCED")
-        structure = smc_data.get("structure", "UNKNOWN")
-        
-        if ob_signal == "NEAR_BULLISH_OB":
-            score += 10
-            reasons.append("Near bullish order block")
-        elif ob_signal == "NEAR_BEARISH_OB":
-            score -= 10
-            reasons.append("Near bearish order block")
-        
-        if structure == "BULLISH":
-            score += 5
-            reasons.append("Bullish market structure")
-        elif structure == "BEARISH":
-            score -= 5
-            reasons.append("Bearish market structure")
-    
-    # --- Generate recommendation ---
+        if smc_data.get("ob_signal") == "NEAR_BULLISH_OB": score += 10; reasons.append("Near bullish OB")
+        elif smc_data.get("ob_signal") == "NEAR_BEARISH_OB": score -= 10; reasons.append("Near bearish OB")
+        if smc_data.get("structure") == "BULLISH": score += 5; reasons.append("Bullish structure")
+        elif smc_data.get("structure") == "BEARISH": score -= 5; reasons.append("Bearish structure")
     score = max(-100, min(100, score))
-    
-    if score >= 60:
-        recommendation = "STRONG BUY"
-    elif score >= 30:
-        recommendation = "BUY"
-    elif score >= 10:
-        recommendation = "LEAN BUY"
-    elif score <= -60:
-        recommendation = "STRONG SELL"
-    elif score <= -30:
-        recommendation = "SELL"
-    elif score <= -10:
-        recommendation = "LEAN SELL"
-    else:
-        recommendation = "WAIT"
-    
+    if score >= 60: rec = "STRONG BUY"
+    elif score >= 30: rec = "BUY"
+    elif score >= 10: rec = "LEAN BUY"
+    elif score <= -60: rec = "STRONG SELL"
+    elif score <= -30: rec = "SELL"
+    elif score <= -10: rec = "LEAN SELL"
+    else: rec = "WAIT"
+    return {"score": score, "recommendation": rec, "reasons": reasons}
+
+
+# ============================================================
+# DETAIL TAB: ADVANCED INDICATORS (computed on-demand per coin)
+# ============================================================
+
+def calculate_ema_crosses(df: pd.DataFrame) -> dict:
+    """EMA 9/21 and 50/200 crossover analysis."""
+    if df.empty or len(df) < 200:
+        short_ok = not df.empty and len(df) >= 21
+        if short_ok:
+            ema9 = EMAIndicator(close=df["close"], window=9).ema_indicator()
+            ema21 = EMAIndicator(close=df["close"], window=21).ema_indicator()
+            e9, e21 = ema9.iloc[-1], ema21.iloc[-1]
+            e9p, e21p = ema9.iloc[-2], ema21.iloc[-2]
+            cross_9_21 = "GOLDEN" if e9 > e21 and e9p <= e21p else ("DEATH" if e9 < e21 and e9p >= e21p else ("BULLISH" if e9 > e21 else "BEARISH"))
+            return {"ema9": round(e9, 6), "ema21": round(e21, 6), "cross_9_21": cross_9_21,
+                    "ema50": None, "ema200": None, "cross_50_200": "N/A",
+                    "price_vs_ema21": round((df["close"].iloc[-1] / e21 - 1) * 100, 2)}
+        return {"ema9": None, "ema21": None, "cross_9_21": "N/A", "ema50": None, "ema200": None, "cross_50_200": "N/A", "price_vs_ema21": 0}
+
+    ema9 = EMAIndicator(close=df["close"], window=9).ema_indicator()
+    ema21 = EMAIndicator(close=df["close"], window=21).ema_indicator()
+    ema50 = EMAIndicator(close=df["close"], window=50).ema_indicator()
+    ema200 = EMAIndicator(close=df["close"], window=200).ema_indicator()
+
+    e9, e21, e50, e200 = ema9.iloc[-1], ema21.iloc[-1], ema50.iloc[-1], ema200.iloc[-1]
+    e9p, e21p = ema9.iloc[-2], ema21.iloc[-2]
+    e50p, e200p = ema50.iloc[-2], ema200.iloc[-2]
+
+    # 9/21 cross
+    if e9 > e21 and e9p <= e21p: c1 = "GOLDEN"
+    elif e9 < e21 and e9p >= e21p: c1 = "DEATH"
+    elif e9 > e21: c1 = "BULLISH"
+    else: c1 = "BEARISH"
+
+    # 50/200 cross
+    if e50 > e200 and e50p <= e200p: c2 = "GOLDEN"
+    elif e50 < e200 and e50p >= e200p: c2 = "DEATH"
+    elif e50 > e200: c2 = "BULLISH"
+    else: c2 = "BEARISH"
+
+    price = df["close"].iloc[-1]
     return {
-        "score": score,
-        "recommendation": recommendation,
-        "reasons": reasons,
+        "ema9": round(e9, 6), "ema21": round(e21, 6), "ema50": round(e50, 6), "ema200": round(e200, 6),
+        "cross_9_21": c1, "cross_50_200": c2,
+        "price_vs_ema21": round((price / e21 - 1) * 100, 2),
+        "price_vs_ema200": round((price / e200 - 1) * 100, 2),
     }
+
+
+def calculate_bollinger(df: pd.DataFrame, window: int = 20) -> dict:
+    """Bollinger Bands position analysis."""
+    if df.empty or len(df) < window + 1:
+        return {"bb_upper": 0, "bb_middle": 0, "bb_lower": 0, "bb_width": 0, "bb_position": "MIDDLE", "bb_pct": 50.0}
+    bb = BollingerBands(close=df["close"], window=window, window_dev=2)
+    upper = bb.bollinger_hband().iloc[-1]
+    middle = bb.bollinger_mavg().iloc[-1]
+    lower = bb.bollinger_lband().iloc[-1]
+    width = round((upper - lower) / middle * 100, 2) if middle > 0 else 0
+    price = df["close"].iloc[-1]
+    pct = round((price - lower) / (upper - lower) * 100, 2) if upper != lower else 50.0
+
+    if pct >= 95: pos = "ABOVE_UPPER"
+    elif pct >= 75: pos = "UPPER_ZONE"
+    elif pct >= 25: pos = "MIDDLE"
+    elif pct >= 5: pos = "LOWER_ZONE"
+    else: pos = "BELOW_LOWER"
+
+    return {"bb_upper": round(upper, 6), "bb_middle": round(middle, 6), "bb_lower": round(lower, 6),
+            "bb_width": width, "bb_position": pos, "bb_pct": pct}
+
+
+def calculate_atr(df: pd.DataFrame, window: int = 14) -> dict:
+    """Average True Range for volatility and SL/TP."""
+    if df.empty or len(df) < window + 1:
+        return {"atr": 0, "atr_pct": 0, "volatility": "LOW"}
+    atr_ind = AverageTrueRange(high=df["high"], low=df["low"], close=df["close"], window=window)
+    atr_val = atr_ind.average_true_range().iloc[-1]
+    price = df["close"].iloc[-1]
+    atr_pct = round(atr_val / price * 100, 2) if price > 0 else 0
+
+    if atr_pct > 5: vol = "VERY_HIGH"
+    elif atr_pct > 3: vol = "HIGH"
+    elif atr_pct > 1.5: vol = "MEDIUM"
+    else: vol = "LOW"
+
+    return {"atr": round(atr_val, 6), "atr_pct": atr_pct, "volatility": vol}
+
+
+def calculate_support_resistance(df: pd.DataFrame, lookback: int = 50) -> dict:
+    """Find key S/R levels from swing highs/lows."""
+    if df.empty or len(df) < lookback:
+        return {"supports": [], "resistances": [], "nearest_support": 0, "nearest_resistance": 0}
+    recent = df.tail(lookback)
+    highs, lows = [], []
+    for i in range(2, len(recent) - 2):
+        h = recent.iloc[i]["high"]; lo = recent.iloc[i]["low"]
+        if h > recent.iloc[i-1]["high"] and h > recent.iloc[i-2]["high"] and h > recent.iloc[i+1]["high"] and h > recent.iloc[i+2]["high"]:
+            highs.append(round(h, 6))
+        if lo < recent.iloc[i-1]["low"] and lo < recent.iloc[i-2]["low"] and lo < recent.iloc[i+1]["low"] and lo < recent.iloc[i+2]["low"]:
+            lows.append(round(lo, 6))
+    price = recent.iloc[-1]["close"]
+    supports = sorted([l for l in lows if l < price], reverse=True)[:3]
+    resistances = sorted([h for h in highs if h > price])[:3]
+    return {
+        "supports": supports, "resistances": resistances,
+        "nearest_support": supports[0] if supports else 0,
+        "nearest_resistance": resistances[0] if resistances else 0,
+    }
+
+
+def calculate_fibonacci(df: pd.DataFrame, lookback: int = 50) -> dict:
+    """Fibonacci retracement levels based on recent swing high/low."""
+    if df.empty or len(df) < lookback:
+        return {"fib_levels": {}, "fib_zone": "N/A"}
+    recent = df.tail(lookback)
+    swing_high = recent["high"].max()
+    swing_low = recent["low"].min()
+    diff = swing_high - swing_low
+    if diff <= 0:
+        return {"fib_levels": {}, "fib_zone": "N/A"}
+    levels = {
+        "0.0 (High)": round(swing_high, 6),
+        "0.236": round(swing_high - 0.236 * diff, 6),
+        "0.382": round(swing_high - 0.382 * diff, 6),
+        "0.5": round(swing_high - 0.5 * diff, 6),
+        "0.618": round(swing_high - 0.618 * diff, 6),
+        "0.786": round(swing_high - 0.786 * diff, 6),
+        "1.0 (Low)": round(swing_low, 6),
+    }
+    price = recent.iloc[-1]["close"]
+    pct = (swing_high - price) / diff
+    if pct <= 0.236: zone = "0-23.6% (near high)"
+    elif pct <= 0.382: zone = "23.6-38.2%"
+    elif pct <= 0.5: zone = "38.2-50%"
+    elif pct <= 0.618: zone = "50-61.8% (golden zone)"
+    elif pct <= 0.786: zone = "61.8-78.6%"
+    else: zone = "78.6-100% (near low)"
+    return {"fib_levels": levels, "fib_zone": zone}
+
+
+def calculate_btc_correlation(coin_df: pd.DataFrame, btc_df: pd.DataFrame, window: int = 20) -> dict:
+    """Pearson correlation between coin returns and BTC returns."""
+    if coin_df.empty or btc_df.empty or len(coin_df) < window or len(btc_df) < window:
+        return {"correlation": 0, "corr_label": "N/A"}
+    coin_ret = coin_df["close"].pct_change().dropna().tail(window)
+    btc_ret = btc_df["close"].pct_change().dropna().tail(window)
+    min_len = min(len(coin_ret), len(btc_ret))
+    if min_len < 5:
+        return {"correlation": 0, "corr_label": "N/A"}
+    corr = round(coin_ret.tail(min_len).reset_index(drop=True).corr(btc_ret.tail(min_len).reset_index(drop=True)), 2)
+    if np.isnan(corr): corr = 0
+    if corr >= 0.7: label = "STRONG_POS"
+    elif corr >= 0.3: label = "MODERATE_POS"
+    elif corr >= -0.3: label = "WEAK/NONE"
+    elif corr >= -0.7: label = "MODERATE_NEG"
+    else: label = "STRONG_NEG"
+    return {"correlation": corr, "corr_label": label}
+
+
+def calculate_sl_tp(price: float, atr: float, signal: str, sr_data: dict) -> dict:
+    """Calculate Stop-Loss and Take-Profit based on ATR + S/R levels."""
+    if atr <= 0 or price <= 0:
+        return {"sl": 0, "tp1": 0, "tp2": 0, "tp3": 0, "risk_reward": 0}
+    if signal in ("BUY", "CTB"):
+        sl = sr_data["nearest_support"] if sr_data["nearest_support"] > 0 else price - 2 * atr
+        sl = max(sl, price - 3 * atr)  # cap at 3x ATR
+        tp1 = price + 1.5 * atr
+        tp2 = sr_data["nearest_resistance"] if sr_data["nearest_resistance"] > 0 else price + 3 * atr
+        tp3 = price + 4 * atr
+    elif signal in ("SELL", "CTS"):
+        sl = sr_data["nearest_resistance"] if sr_data["nearest_resistance"] > 0 else price + 2 * atr
+        sl = min(sl, price + 3 * atr)
+        tp1 = price - 1.5 * atr
+        tp2 = sr_data["nearest_support"] if sr_data["nearest_support"] > 0 else price - 3 * atr
+        tp3 = price - 4 * atr
+    else:
+        return {"sl": round(price - 2 * atr, 6), "tp1": round(price + 2 * atr, 6), "tp2": 0, "tp3": 0, "risk_reward": 1.0}
+    risk = abs(price - sl)
+    reward = abs(tp2 - price) if tp2 > 0 else abs(tp1 - price)
+    rr = round(reward / risk, 2) if risk > 0 else 0
+    return {"sl": round(sl, 6), "tp1": round(tp1, 6), "tp2": round(tp2, 6), "tp3": round(tp3, 6), "risk_reward": rr}
+
+
+def calculate_price_range(df: pd.DataFrame) -> dict:
+    """7d/30d high-low range analysis."""
+    result = {}
+    price = df["close"].iloc[-1] if not df.empty else 0
+    for days, label in [(7, "7d"), (30, "30d")]:
+        if len(df) >= days:
+            subset = df.tail(days)
+            hi, lo = subset["high"].max(), subset["low"].min()
+            rng = hi - lo
+            pos = round((price - lo) / rng * 100, 1) if rng > 0 else 50
+            result[f"{label}_high"] = round(hi, 6)
+            result[f"{label}_low"] = round(lo, 6)
+            result[f"{label}_range_pct"] = round(rng / price * 100, 2) if price > 0 else 0
+            result[f"{label}_position"] = pos
+        else:
+            result[f"{label}_high"] = result[f"{label}_low"] = result[f"{label}_range_pct"] = 0
+            result[f"{label}_position"] = 50
+    return result
+
+
+def multi_tf_rsi_summary(rsi_values: dict) -> dict:
+    """Multi-timeframe RSI traffic light summary."""
+    bullish = 0; bearish = 0; total = 0
+    for tf, val in rsi_values.items():
+        if val is None: continue
+        total += 1
+        if val <= 42: bullish += 1
+        elif val >= 58: bearish += 1
+    if total == 0: return {"confluence": "N/A", "bullish_count": 0, "bearish_count": 0, "total": 0}
+    if bullish >= total * 0.75: conf = "STRONG_BUY"
+    elif bullish > bearish: conf = "LEAN_BUY"
+    elif bearish >= total * 0.75: conf = "STRONG_SELL"
+    elif bearish > bullish: conf = "LEAN_SELL"
+    else: conf = "NEUTRAL"
+    return {"confluence": conf, "bullish_count": bullish, "bearish_count": bearish, "total": total}
