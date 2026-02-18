@@ -77,27 +77,32 @@ def sparkline_img(closes, w=110, h=30):
 # PAGE
 # ============================================================
 st.set_page_config(page_title=PAGE_TITLE, page_icon=PAGE_ICON, layout="wide", initial_sidebar_state="collapsed")
-st.markdown("""<style>
-.stApp{background:#0E1117}.block-container{padding:1rem;max-width:100%}
-.hbar{background:linear-gradient(135deg,#1a1a2e,#16213e);border-radius:10px;padding:12px 20px;margin-bottom:12px;display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:10px}
-.htitle{font-size:20px;font-weight:bold;color:#FFD700}.hstat{font-size:13px;color:#ccc}.hstat b{color:white}
-.badge{display:inline-block;padding:3px 10px;border-radius:12px;font-size:12px;font-weight:bold}
-.bn{background:#FFD70033;color:#FFD700}.bb{background:#00FF7F33;color:#00FF7F}.br{background:#FF634733;color:#FF6347}
-.crow{background:#1a1a2e;border-radius:0 10px 10px 0;padding:10px 14px;margin:4px 0;display:flex;align-items:center;gap:12px}
-.crow .ic img{width:34px;height:34px;border-radius:50%}
-.crow .inf{flex:1;min-width:160px}.crow .cn{font-size:15px;font-weight:bold;color:white}
-.crow .cf{font-size:11px;color:#888;margin-left:4px}.crow .cr{font-size:10px;background:#2a2a4a;padding:1px 6px;border-radius:6px;color:#888;margin-left:4px}
-.crow .pl{font-size:12px;color:#aaa;margin-top:2px}.crow .chs{font-size:11px;color:#888;margin-top:2px}
-.crow .charts{display:flex;gap:16px;align-items:center;flex-shrink:0}.crow .clbl{font-size:9px;color:#555;text-align:center}
-.crow .sig{text-align:right;min-width:140px;flex-shrink:0}.crow .sl{font-size:15px;font-weight:bold}
-.crow .rl{font-size:12px;color:#888;margin-top:1px}.crow .rl b{font-size:14px}
-.cp{color:#00FF7F}.cm{color:#FF6347}
-#MainMenu,footer,header{visibility:hidden}
-/* Compact inline chart buttons */
-.stButton>button{padding:2px 10px !important;font-size:11px !important;height:auto !important;min-height:0 !important;background:#12121f !important;color:#888 !important;border:1px solid #2a2a4a !important;border-radius:4px !important;margin-top:-6px !important}
-.stButton>button:hover{color:#FFD700 !important;border-color:#FFD700 !important}
-.stTabs [data-baseweb="tab-list"]{gap:4px}.stTabs [data-baseweb="tab"]{border-radius:8px;padding:8px 16px;font-weight:600}
-@media(max-width:768px){.block-container{padding:.5rem}.crow .charts{display:none}.crow .inf{min-width:120px}.crow .sig{min-width:100px}}
+
+# Font size from session state (default: 1 = normal)
+fz = st.session_state.get("font_scale", 1.0)
+
+st.markdown(f"""<style>
+:root{{--fz:{fz}}}
+.stApp{{background:#0E1117}}.block-container{{padding:1rem;max-width:100%}}
+.hbar{{background:linear-gradient(135deg,#1a1a2e,#16213e);border-radius:10px;padding:12px 20px;margin-bottom:12px;display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:10px}}
+.htitle{{font-size:calc(20px * var(--fz));font-weight:bold;color:#FFD700}}.hstat{{font-size:calc(14px * var(--fz));color:#ccc}}.hstat b{{color:white}}
+.badge{{display:inline-block;padding:3px 10px;border-radius:12px;font-size:calc(13px * var(--fz));font-weight:bold}}
+.bn{{background:#FFD70033;color:#FFD700}}.bb{{background:#00FF7F33;color:#00FF7F}}.br{{background:#FF634733;color:#FF6347}}
+.crow{{background:#1a1a2e;border-radius:0 10px 10px 0;padding:10px 14px;margin:4px 0;display:flex;align-items:center;gap:12px}}
+.crow .ic img{{width:34px;height:34px;border-radius:50%}}
+.crow .inf{{flex:1;min-width:160px}}.crow .cn{{font-size:calc(16px * var(--fz));font-weight:bold;color:white}}
+.crow .cf{{font-size:calc(12px * var(--fz));color:#888;margin-left:4px}}.crow .cr{{font-size:calc(11px * var(--fz));background:#2a2a4a;padding:1px 6px;border-radius:6px;color:#888;margin-left:4px}}
+.crow .pl{{font-size:calc(14px * var(--fz));color:#aaa;margin-top:2px}}.crow .chs{{font-size:calc(12px * var(--fz));color:#888;margin-top:2px}}
+.crow .charts{{display:flex;gap:16px;align-items:center;flex-shrink:0}}.crow .clbl{{font-size:calc(10px * var(--fz));color:#555;text-align:center}}
+.crow .sig{{text-align:right;min-width:170px;flex-shrink:0}}.crow .sl{{font-size:calc(16px * var(--fz));font-weight:bold}}
+.crow .rl{{font-size:calc(12px * var(--fz));color:#888;margin-top:1px}}.crow .rl b{{font-size:calc(14px * var(--fz))}}
+.crow .rsi-row{{display:flex;gap:6px;margin-top:3px;flex-wrap:wrap}}.crow .rsi-pill{{font-size:calc(11px * var(--fz));padding:1px 5px;border-radius:4px;background:#1e1e3a}}
+.cp{{color:#00FF7F}}.cm{{color:#FF6347}}
+#MainMenu,footer,header{{visibility:hidden}}
+.stButton>button{{padding:2px 10px !important;font-size:calc(12px * var(--fz)) !important;height:auto !important;min-height:0 !important;background:#12121f !important;color:#888 !important;border:1px solid #2a2a4a !important;border-radius:4px !important;margin-top:-6px !important}}
+.stButton>button:hover{{color:#FFD700 !important;border-color:#FFD700 !important}}
+.stTabs [data-baseweb="tab-list"]{{gap:4px}}.stTabs [data-baseweb="tab"]{{border-radius:8px;padding:8px 16px;font-weight:600;font-size:calc(14px * var(--fz))}}
+@media(max-width:768px){{.block-container{{padding:.5rem}}.crow .charts{{display:none}}.crow .inf{{min-width:120px}}.crow .sig{{min-width:120px}}}}
 </style>""", unsafe_allow_html=True)
 
 # ============================================================
@@ -110,13 +115,21 @@ with st.sidebar:
                    "Extended (180+)": TOP_COINS_EXTENDED}[coin_list_mode]
     max_coins = st.slider("Max Coins", 20, 180, len(coin_source), 10)
     st.markdown("---")
-    selected_timeframes = st.multiselect("Timeframes", list(TIMEFRAMES.keys()), default=["4h", "1D"])
-    show_smc = st.checkbox("Smart Money Concepts", value=False)
+
+    st.markdown("### 🔤 Schriftgröße")
+    font_scale = st.select_slider("Text", options=[0.85, 0.9, 1.0, 1.1, 1.2, 1.3],
+        value=st.session_state.get("font_scale", 1.0), format_func=lambda x: {0.85:"Klein",0.9:"Kompakt",1.0:"Normal",1.1:"Groß",1.2:"Sehr groß",1.3:"XXL"}[x], key="fs_slider")
+    if font_scale != st.session_state.get("font_scale", 1.0):
+        st.session_state["font_scale"] = font_scale; st.rerun()
     st.markdown("---")
-    st.markdown("### 📱 Telegram")
-    tg_token = st.text_input("Bot Token", type="password", key="tg_token")
-    tg_chat = st.text_input("Chat ID", key="tg_chat")
-    alert_min = st.slider("Min Score", 10, 80, 30, 5)
+
+    st.markdown("### ⏱️ Extra Timeframes")
+    st.caption("RSI wird **immer** auf 1h, 4h, 1D, 1W berechnet. Hier kannst du zusätzliche Analysen aktivieren:")
+    selected_timeframes = st.multiselect("Heatmap-Timeframes",
+        list(TIMEFRAMES.keys()), default=["4h", "1D"],
+        help="Welche Timeframes im RSI-Heatmap-Dropdown zur Auswahl stehen")
+    show_smc = st.checkbox("Smart Money Concepts", value=False,
+        help="Order Blocks, Fair Value Gaps, Market Structure — braucht mehr Rechenzeit")
     st.markdown("---")
     if st.button("🔄 Refresh", use_container_width=True):
         st.cache_data.clear(); st.rerun()
@@ -127,6 +140,9 @@ with st.sidebar:
 # ============================================================
 @st.cache_data(ttl=180, show_spinner="🧙‍♂️ Scanning crypto market...")
 def scan_all(coins, tfs, smc=False):
+    # Always compute core TFs + any extras from sidebar
+    core_tfs = ["1h", "4h", "1D", "1W"]
+    all_tfs = list(dict.fromkeys(core_tfs + list(tfs)))  # deduplicated, core first
     results = []
     ex = get_exchange_status(); connected = ex["connected"]
     mkt_df = fetch_all_market_data(); tickers = fetch_all_tickers() if connected else {}
@@ -151,7 +167,7 @@ def scan_all(coins, tfs, smc=False):
             r["rank"],r["coin_name"],r["coin_image"]=999,sym,""; r["change_1h"],r["change_7d"],r["change_30d"]=0,0,0
         if r["price"]==0: continue
         kld={}
-        for tf in tfs:
+        for tf in all_tfs:
             df_k = fetch_klines_smart(sym, TIMEFRAMES.get(tf,tf))
             if not df_k.empty and len(df_k)>=15:
                 kld[tf]=df_k
@@ -233,6 +249,7 @@ def crow_html(row, charts=True):
         ch=f'<div class="charts"><div><div class="clbl">● 7d</div>{s7}</div><div><div class="clbl">● 30d</div>{s30}</div></div>'
     # Strong glow effect on signal label
     glow = f'text-shadow:0 0 8px {sc},0 0 16px {sc};' if is_strong_sell or is_strong_buy else ""
+    r1h=row.get("rsi_1h",50); r4=row.get("rsi_4h",50); r1d=row.get("rsi_1D",50); r1w=row.get("rsi_1W",50)
     return f'''<div class="crow" style="{bdr}">
 <div class="ic">{icon(im)}</div>
 <div class="inf"><div><span class="cn">{sym}</span><span class="cf">{nm}</span><span class="cr">{rks}</span></div>
@@ -240,8 +257,8 @@ def crow_html(row, charts=True):
 <div class="chs">Ch%: <span class="{cc(c1h)}">{c1h:+.2f}%</span> <span class="{cc(c24)}">{c24:+.2f}%</span> <span class="{cc(c7)}" style="font-weight:bold;">{c7:+.2f}%</span> <span class="{cc(c30)}">{c30:+.2f}%</span></div></div>
 {ch}
 <div class="sig"><span style="font-size:11px;color:#888;">Now:</span> <span class="sl" style="color:{sc};{glow}">{sig}</span>
-<div class="rl">RSI (4h): <b style="color:{rsc(r4)};">{r4:.2f}</b></div>
-<div class="rl">RSI (1D): <b style="color:{rsc(r1)};">{r1:.2f}</b></div></div></div>'''
+<div class="rsi-row"><span class="rsi-pill">1h: <b style="color:{rsc(r1h)};">{r1h:.1f}</b></span><span class="rsi-pill" style="background:#252550;"><b style="color:{rsc(r4)};">{r4:.1f}</b> 4h</span><span class="rsi-pill" style="background:#252550;"><b style="color:{rsc(r1d)};">{r1d:.1f}</b> 1D</span><span class="rsi-pill">1W: <b style="color:{rsc(r1w)};">{r1w:.1f}</b></span></div>
+</div></div>'''
 
 def render_rows_with_chart(dataframe, tab_key, max_rows=60):
     """Render coin rows with inline chart button under each row."""
@@ -263,12 +280,21 @@ def render_rows_with_chart(dataframe, tab_key, max_rows=60):
 
 def tv_iframe(sym, h=420):
     pair=f"BINANCE:{sym}USDT"
-    # Use TradingView Advanced Chart widget with RSI study enabled
+    # Studies: RSI(14) + Pivot Points Standard (Fibonacci type)
+    # PivotPointsStandard inputs: type=Fibonacci is kind=3
+    studies_encoded = (
+        "%5B"
+        "%7B%22id%22%3A%22RSI%40tv-basicstudies%22%2C%22inputs%22%3A%7B%22length%22%3A14%7D%7D%2C"
+        "%7B%22id%22%3A%22PivotPointsStandard%40tv-basicstudies%22%2C%22inputs%22%3A%7B%22kind%22%3A%22Fibonacci%22%7D%7D"
+        "%5D"
+    )
     return (f'<div style="height:{h}px;background:#131722;border-radius:0 0 8px 8px;overflow:hidden;">'
             f'<iframe src="https://s.tradingview.com/widgetembed/?frameElementId=tv_chart'
             f'&symbol={pair}&interval=240&hidesidetoolbar=0&symboledit=1&saveimage=0'
             f'&toolbarbg=131722&theme=dark&style=1&timezone=Etc%2FUTC&withdateranges=1'
-            f'&studies=%5B%7B%22id%22%3A%22RSI%40tv-basicstudies%22%2C%22inputs%22%3A%7B%22length%22%3A14%7D%7D%5D'
+            f'&allow_symbol_change=1'
+            f'&studies={studies_encoded}'
+            f'&enabled_features=header_interval_dialog_button'
             f'" style="width:100%;height:{h}px;border:none;"></iframe></div>')
 
 # ============================================================
@@ -417,6 +443,34 @@ with tab_mc:
 # ============================================================
 with tab_conf:
     st.markdown("### 🎯 Confluence Scanner")
+    with st.expander("ℹ️ Was ist der Confluence Scanner und wie nutze ich ihn?"):
+        st.markdown("""**Der Confluence Scanner** bewertet jeden Coin anhand **mehrerer unabhängiger Indikatoren gleichzeitig** und berechnet daraus einen Gesamt-Score von -100 bis +100.
+
+**Wie wird der Score berechnet?**
+- **RSI 4h** (max ±30 Punkte): Der wichtigste Faktor. RSI < 30 = maximale Kaufpunkte, RSI > 80 = maximale Verkaufspunkte
+- **RSI 1D** (max ±20 Punkte): Bestätigung vom Tages-Trend
+- **MACD** (max ±20 Punkte): Momentum-Richtung und Histogramm-Stärke
+- **Volume & OBV** (max ±15 Punkte): Hohes Volumen + passende OBV-Richtung = starke Bestätigung
+- **Smart Money** (max ±15 Punkte, wenn aktiviert): Order Blocks und Market Structure
+
+**Score-Interpretation:**
+| Score | Empfehlung | Bedeutung |
+|---|---|---|
+| ≥ 60 | 🟢 **STRONG BUY** | Sehr starke Übereinstimmung — fast alle Indikatoren sind bullish |
+| 30-59 | 🟢 BUY | Mehrheit bullish — guter Einstiegszeitpunkt möglich |
+| 10-29 | 🟡 LEAN BUY | Leicht bullish — auf Bestätigung warten |
+| -9 bis 9 | ⚪ WAIT | Keine klare Richtung — nicht handeln |
+| -29 bis -10 | 🟡 LEAN SELL | Leicht bearish — vorsichtig sein |
+| -59 bis -30 | 🔴 SELL | Mehrheit bearish — Positionen absichern |
+| ≤ -60 | 🔴 **STRONG SELL** | Sehr starke Übereinstimmung bearish — Exit empfohlen |
+
+**Wichtig:** Ein hoher Confluence-Score bedeutet, dass **mehrere unabhängige Signale** in die gleiche Richtung zeigen. Das ist wesentlich zuverlässiger als ein einzelner Indikator.
+
+**So nutzt du den Scanner:**
+1. Schau dir die Top 5 Buy/Sell Coins an
+2. Geh zum Detail-Tab für den ausgewählten Coin
+3. Überprüfe dort Key Levels, S/R und Fibonacci für Entry/Exit
+4. Setze SL/TP basierend auf den Empfehlungen im Risk Management""")
     st.markdown("#### 🟢 Top Buy")
     for _,r in df[df["score"]>0].sort_values("score",ascending=False).head(15).iterrows():
         s=r["score"]
