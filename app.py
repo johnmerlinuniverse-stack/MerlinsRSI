@@ -93,6 +93,9 @@ st.markdown("""<style>
 .crow .rl{font-size:12px;color:#888;margin-top:1px}.crow .rl b{font-size:14px}
 .cp{color:#00FF7F}.cm{color:#FF6347}
 #MainMenu,footer,header{visibility:hidden}
+/* Compact inline chart buttons */
+.stButton>button{padding:2px 10px !important;font-size:11px !important;height:auto !important;min-height:0 !important;background:#12121f !important;color:#888 !important;border:1px solid #2a2a4a !important;border-radius:4px !important;margin-top:-6px !important}
+.stButton>button:hover{color:#FFD700 !important;border-color:#FFD700 !important}
 .stTabs [data-baseweb="tab-list"]{gap:4px}.stTabs [data-baseweb="tab"]{border-radius:8px;padding:8px 16px;font-weight:600}
 @media(max-width:768px){.block-container{padding:.5rem}.crow .charts{display:none}.crow .inf{min-width:120px}.crow .sig{min-width:100px}}
 </style>""", unsafe_allow_html=True)
@@ -203,13 +206,23 @@ def rsc(v):
 def icon(url): return f'<img src="{url}" width="34" height="34" style="border-radius:50%;">' if url else '<div style="width:34px;height:34px;border-radius:50%;background:#2a2a4a;"></div>'
 
 def crow_html(row, charts=True):
-    sig=row.get("signal","WAIT"); sc=sig_color(sig); ba=row.get("border_alpha",0)
-    if sig in ("CTS","SELL"): bdr=f"border-left:6px solid rgba(255,80,80,{max(ba,.35):.2f});"
-    elif sig in ("CTB","BUY"): bdr=f"border-left:6px solid rgba(0,255,140,{max(ba,.35):.2f});"
-    else: bdr="border-left:6px solid transparent;"
+    sig=row.get("signal","WAIT"); ba=row.get("border_alpha",0)
+    r4=row.get("rsi_4h",50); r1=row.get("rsi_1D",50)
+    # Neon colors for strong signals
+    is_strong_sell = sig in ("CTS","SELL") and r4 >= 70
+    is_strong_buy = sig in ("CTB","BUY") and r4 <= 30
+    if is_strong_sell:
+        sc="#FF0040"; bdr=f"border-left:6px solid rgba(255,0,64,1.0);"  # neon red
+    elif sig in ("CTS","SELL"):
+        sc=sig_color(sig); bdr=f"border-left:6px solid rgba(255,80,80,{max(ba,.35):.2f});"
+    elif is_strong_buy:
+        sc="#00FF00"; bdr=f"border-left:6px solid rgba(0,255,0,1.0);"  # neon green
+    elif sig in ("CTB","BUY"):
+        sc=sig_color(sig); bdr=f"border-left:6px solid rgba(0,255,140,{max(ba,.35):.2f});"
+    else:
+        sc=sig_color(sig); bdr="border-left:6px solid transparent;"
     sym=row["symbol"]; nm=row.get("coin_name",sym); rk=row.get("rank",999)
     rks=f"#{int(rk)}" if rk<999 else ""; im=row.get("coin_image","")
-    r4=row.get("rsi_4h",50); r1=row.get("rsi_1D",50)
     c1h,c24,c7,c30=row.get("change_1h",0),row.get("change_24h",0),row.get("change_7d",0),row.get("change_30d",0)
     ch=""
     if charts:
@@ -218,15 +231,35 @@ def crow_html(row, charts=True):
         try: s30=sparkline_img(json.loads(row.get("closes_1D","[]")),110,30)
         except: s30=""
         ch=f'<div class="charts"><div><div class="clbl">● 7d</div>{s7}</div><div><div class="clbl">● 30d</div>{s30}</div></div>'
+    # Strong glow effect on signal label
+    glow = f'text-shadow:0 0 8px {sc},0 0 16px {sc};' if is_strong_sell or is_strong_buy else ""
     return f'''<div class="crow" style="{bdr}">
 <div class="ic">{icon(im)}</div>
 <div class="inf"><div><span class="cn">{sym}</span><span class="cf">{nm}</span><span class="cr">{rks}</span></div>
 <div class="pl">Price: <b style="color:white;">{fp(row["price"])}</b></div>
 <div class="chs">Ch%: <span class="{cc(c1h)}">{c1h:+.2f}%</span> <span class="{cc(c24)}">{c24:+.2f}%</span> <span class="{cc(c7)}" style="font-weight:bold;">{c7:+.2f}%</span> <span class="{cc(c30)}">{c30:+.2f}%</span></div></div>
 {ch}
-<div class="sig"><span style="font-size:11px;color:#888;">Now:</span> <span class="sl" style="color:{sc};">{sig}</span>
+<div class="sig"><span style="font-size:11px;color:#888;">Now:</span> <span class="sl" style="color:{sc};{glow}">{sig}</span>
 <div class="rl">RSI (4h): <b style="color:{rsc(r4)};">{r4:.2f}</b></div>
 <div class="rl">RSI (1D): <b style="color:{rsc(r1)};">{r1:.2f}</b></div></div></div>'''
+
+def render_rows_with_chart(dataframe, tab_key, max_rows=60):
+    """Render coin rows with inline chart button under each row."""
+    chart_state_key = f"chart_{tab_key}"
+    for _,row in dataframe.head(max_rows).iterrows():
+        sym=row["symbol"]
+        st.markdown(crow_html(row), unsafe_allow_html=True)
+        # Inline chart button
+        if st.button(f"📈 {sym}", key=f"btn_{tab_key}_{sym}", use_container_width=False):
+            # Toggle: click same coin = close, click different = switch
+            if st.session_state.get(chart_state_key)==sym:
+                st.session_state[chart_state_key]=None
+            else:
+                st.session_state[chart_state_key]=sym
+            st.rerun()
+        # Show chart if this coin is selected
+        if st.session_state.get(chart_state_key)==sym:
+            st.components.v1.html(tv_iframe(sym), height=440)
 
 def tv_iframe(sym, h=420):
     pair=f"BINANCE:{sym}USDT"
@@ -286,15 +319,7 @@ with tab_alerts:
     if adf.empty: st.info("No active alerts with this filter.")
     else:
         st.caption(f"**{len(adf)}** signals | 🔴 {len(adf[adf['signal'].isin(['SELL','CTS'])])} SELL/CTS  🟢 {len(adf[adf['signal'].isin(['BUY','CTB'])])} BUY/CTB")
-
-        # Single-click chart selector — one iframe max
-        achart_coins=["— select coin for chart —"]+adf["symbol"].head(40).tolist()
-        achart_sel=st.selectbox("📈 Chart:",achart_coins,index=0,key="achart_sel",label_visibility="collapsed")
-        if achart_sel!="— select coin for chart —":
-            st.components.v1.html(tv_iframe(achart_sel), height=440)
-
-        for _,row in adf.head(40).iterrows():
-            st.markdown(crow_html(row), unsafe_allow_html=True)
+        render_rows_with_chart(adf, "alert", 40)
 
 # ============================================================
 # TAB 2: RSI HEATMAP — Coin Rank default, search, grid
@@ -368,10 +393,10 @@ with tab_hm:
         c1,c2,c3=st.columns(3)
         with c1:
             st.markdown("**🔴 Most Overbought**")
-            for _,r in pdf.nlargest(5,rc_col).iterrows(): st.markdown(f"`{r['symbol']}` RSI: **{r[rc_col]:.1f}**")
+            for _,r in pdf.nlargest(5,rc_col).iterrows(): st.markdown(f'<span style="color:#FF6347;">`{r["symbol"]}` RSI: **{r[rc_col]:.1f}**</span>', unsafe_allow_html=True)
         with c2:
             st.markdown("**🟢 Most Oversold**")
-            for _,r in pdf.nsmallest(5,rc_col).iterrows(): st.markdown(f"`{r['symbol']}` RSI: **{r[rc_col]:.1f}**")
+            for _,r in pdf.nsmallest(5,rc_col).iterrows(): st.markdown(f'<span style="color:#00FF7F;">`{r["symbol"]}` RSI: **{r[rc_col]:.1f}**</span>', unsafe_allow_html=True)
         with c3:
             st.markdown("**📊 Distribution**")
             st.markdown(f"RSI > 70: **{len(pdf[pdf[rc_col]>70])}** | 30–70: **{len(pdf[(pdf[rc_col]>=30)&(pdf[rc_col]<=70)])}** | < 30: **{len(pdf[pdf[rc_col]<30])}**")
@@ -385,15 +410,7 @@ with tab_mc:
     sm={"Rank":("rank",True),"1h":("change_1h",False),"24h":("change_24h",False),"7d":("change_7d",False),"30d":("change_30d",False),"RSI (4h)":("rsi_4h",False),"RSI (1D)":("rsi_1D",False)}
     sc,sa=sm.get(sm_sort,("rank",True))
     if sc in ddf.columns: ddf=ddf.sort_values(sc,ascending=sa)
-
-    # Single-click chart selector
-    mc_coins=["— select coin for chart —"]+ddf["symbol"].tolist()
-    mc_sel=st.selectbox("📈 Chart:",mc_coins,index=0,key="mc_chart_sel",label_visibility="collapsed")
-    if mc_sel!="— select coin for chart —":
-        st.components.v1.html(tv_iframe(mc_sel), height=440)
-
-    for _,row in ddf.iterrows():
-        st.markdown(crow_html(row), unsafe_allow_html=True)
+    render_rows_with_chart(ddf, "mc", 80)
 
 # ============================================================
 # TAB 4: CONFLUENCE
