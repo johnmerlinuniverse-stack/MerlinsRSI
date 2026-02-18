@@ -280,20 +280,13 @@ def render_rows_with_chart(dataframe, tab_key, max_rows=60):
 
 def tv_iframe(sym, h=420):
     pair=f"BINANCE:{sym}USDT"
-    # Studies: RSI(14) + Pivot Points Standard (Fibonacci type)
-    # PivotPointsStandard inputs: type=Fibonacci is kind=3
-    studies_encoded = (
-        "%5B"
-        "%7B%22id%22%3A%22RSI%40tv-basicstudies%22%2C%22inputs%22%3A%7B%22length%22%3A14%7D%7D%2C"
-        "%7B%22id%22%3A%22PivotPointsStandard%40tv-basicstudies%22%2C%22inputs%22%3A%7B%22kind%22%3A%22Fibonacci%22%7D%7D"
-        "%5D"
-    )
+    # Simple widgetembed - RSI study only (works reliably)
+    # Pivot Points can be added manually by the user via the indicators menu
     return (f'<div style="height:{h}px;background:#131722;border-radius:0 0 8px 8px;overflow:hidden;">'
-            f'<iframe src="https://s.tradingview.com/widgetembed/?frameElementId=tv_chart'
+            f'<iframe src="https://s.tradingview.com/widgetembed/?frameElementId=tv_{sym}'
             f'&symbol={pair}&interval=240&hidesidetoolbar=0&symboledit=1&saveimage=0'
             f'&toolbarbg=131722&theme=dark&style=1&timezone=Etc%2FUTC&withdateranges=1'
-            f'&allow_symbol_change=1'
-            f'&studies={studies_encoded}'
+            f'&allow_symbol_change=1&studies=RSI%40tv-basicstudies'
             f'&enabled_features=header_interval_dialog_button'
             f'" style="width:100%;height:{h}px;border:none;"></iframe></div>')
 
