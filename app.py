@@ -230,11 +230,13 @@ def crow_html(row, charts=True):
 
 def tv_iframe(sym, h=420):
     pair=f"BINANCE:{sym}USDT"
+    # Use TradingView Advanced Chart widget with RSI study enabled
     return (f'<div style="height:{h}px;background:#131722;border-radius:0 0 8px 8px;overflow:hidden;">'
-            f'<iframe src="https://s.tradingview.com/widgetembed/?symbol={pair}&interval=240'
-            f'&hidesidetoolbar=1&symboledit=1&saveimage=0&toolbarbg=131722'
-            f'&studies=%5B%22RSI%40tv-basicstudies%22%5D&theme=dark&style=1'
-            f'&timezone=Etc%2FUTC&withdateranges=1" style="width:100%;height:{h}px;border:none;"></iframe></div>')
+            f'<iframe src="https://s.tradingview.com/widgetembed/?frameElementId=tv_chart'
+            f'&symbol={pair}&interval=240&hidesidetoolbar=0&symboledit=1&saveimage=0'
+            f'&toolbarbg=131722&theme=dark&style=1&timezone=Etc%2FUTC&withdateranges=1'
+            f'&studies=%5B%7B%22id%22%3A%22RSI%40tv-basicstudies%22%2C%22inputs%22%3A%7B%22length%22%3A14%7D%7D%5D'
+            f'" style="width:100%;height:{h}px;border:none;"></iframe></div>')
 
 # ============================================================
 # HEADER
@@ -260,30 +262,39 @@ tab_alerts, tab_hm, tab_mc, tab_conf, tab_det = st.tabs([
     f"🚨 24h Alerts {sct}🔴 {bct}🟢", "🔥 RSI Heatmap", "📊 By Market Cap", "🎯 Confluence", "🔍 Detail"])
 
 # ============================================================
-# TAB 1: 24h ALERTS — lazy chart expanders
+# TAB 1: 24h ALERTS — single-click chart, Strong filter
 # ============================================================
 with tab_alerts:
     ct,cf,cs=st.columns([2,1,1])
     with ct: st.markdown("### 🚨 24h Alerts")
-    with cf: amode=st.selectbox("Show:",["BUY & SELL only","All (incl. CTB/CTS)"],key="amode",label_visibility="collapsed")
+    with cf: amode=st.selectbox("Show:",["BUY & SELL only","Strong signals only","All (incl. CTB/CTS)"],key="amode",label_visibility="collapsed")
     with cs: asort=st.selectbox("Sort:",["Signal Strength","RSI (4h)","RSI (1D)","Rank"],key="asort",label_visibility="collapsed")
-    adf=df[df["signal"].isin(["BUY","SELL"])].copy() if amode=="BUY & SELL only" else df[df["signal"]!="WAIT"].copy()
+
+    if amode=="Strong signals only":
+        # Strong BUY: RSI_4h <= 30, Strong SELL: RSI_4h >= 70
+        adf=df[((df["signal"].isin(["BUY","CTB"])) & (df["rsi_4h"]<=30)) | ((df["signal"].isin(["SELL","CTS"])) & (df["rsi_4h"]>=70))].copy()
+    elif amode=="BUY & SELL only":
+        adf=df[df["signal"].isin(["BUY","SELL"])].copy()
+    else:
+        adf=df[df["signal"]!="WAIT"].copy()
+
     if asort=="RSI (4h)" and "rsi_4h" in adf.columns: adf=adf.sort_values("rsi_4h",ascending=False)
     elif asort=="RSI (1D)" and "rsi_1D" in adf.columns: adf=adf.sort_values("rsi_1D",ascending=False)
     elif asort=="Rank": adf=adf.sort_values("rank")
     else: adf=pd.concat([adf[adf["signal"].isin(["CTS","SELL"])].sort_values("rsi_4h",ascending=False),adf[adf["signal"].isin(["CTB","BUY"])].sort_values("rsi_4h")])
-    if adf.empty: st.info("No active alerts.")
+
+    if adf.empty: st.info("No active alerts with this filter.")
     else:
         st.caption(f"**{len(adf)}** signals | 🔴 {len(adf[adf['signal'].isin(['SELL','CTS'])])} SELL/CTS  🟢 {len(adf[adf['signal'].isin(['BUY','CTB'])])} BUY/CTB")
+
+        # Single-click chart selector — one iframe max
+        achart_coins=["— select coin for chart —"]+adf["symbol"].head(40).tolist()
+        achart_sel=st.selectbox("📈 Chart:",achart_coins,index=0,key="achart_sel",label_visibility="collapsed")
+        if achart_sel!="— select coin for chart —":
+            st.components.v1.html(tv_iframe(achart_sel), height=440)
+
         for _,row in adf.head(40).iterrows():
-            sym=row["symbol"]
             st.markdown(crow_html(row), unsafe_allow_html=True)
-            with st.expander(f"📈 {sym} Chart"):
-                if st.session_state.get("achart")==sym:
-                    st.components.v1.html(tv_iframe(sym), height=440)
-                else:
-                    if st.button(f"▶ Load {sym} Chart", key=f"la_{sym}"):
-                        st.session_state["achart"]=sym; st.rerun()
 
 # ============================================================
 # TAB 2: RSI HEATMAP — Coin Rank default, search, grid
@@ -366,7 +377,7 @@ with tab_hm:
             st.markdown(f"RSI > 70: **{len(pdf[pdf[rc_col]>70])}** | 30–70: **{len(pdf[(pdf[rc_col]>=30)&(pdf[rc_col]<=70)])}** | < 30: **{len(pdf[pdf[rc_col]<30])}**")
 
 # ============================================================
-# TAB 3: BY MARKET CAP — with sparklines + lazy chart
+# TAB 3: BY MARKET CAP — single-click chart
 # ============================================================
 with tab_mc:
     sm_sort=st.selectbox("Sort:",["Rank","1h","24h","7d","30d","RSI (4h)","RSI (1D)"],key="ms")
@@ -374,15 +385,15 @@ with tab_mc:
     sm={"Rank":("rank",True),"1h":("change_1h",False),"24h":("change_24h",False),"7d":("change_7d",False),"30d":("change_30d",False),"RSI (4h)":("rsi_4h",False),"RSI (1D)":("rsi_1D",False)}
     sc,sa=sm.get(sm_sort,("rank",True))
     if sc in ddf.columns: ddf=ddf.sort_values(sc,ascending=sa)
+
+    # Single-click chart selector
+    mc_coins=["— select coin for chart —"]+ddf["symbol"].tolist()
+    mc_sel=st.selectbox("📈 Chart:",mc_coins,index=0,key="mc_chart_sel",label_visibility="collapsed")
+    if mc_sel!="— select coin for chart —":
+        st.components.v1.html(tv_iframe(mc_sel), height=440)
+
     for _,row in ddf.iterrows():
-        sym=row["symbol"]
         st.markdown(crow_html(row), unsafe_allow_html=True)
-        with st.expander(f"📈 {sym} Chart"):
-            if st.session_state.get("mchart")==sym:
-                st.components.v1.html(tv_iframe(sym), height=440)
-            else:
-                if st.button(f"▶ Load {sym} Chart", key=f"lm_{sym}"):
-                    st.session_state["mchart"]=sym; st.rerun()
 
 # ============================================================
 # TAB 4: CONFLUENCE
