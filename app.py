@@ -280,19 +280,14 @@ def render_rows_with_chart(dataframe, tab_key, max_rows=60):
 
 def tv_iframe(sym, h=420):
     pair=f"BINANCE:{sym}USDT"
-    # Studies format: URL-encoded JSON array of study objects
-    # Simpler encoding without custom inputs (uses defaults)
-    studies = (
-        "%5B"  # [
-        "%7B%22id%22%3A%22RSI%40tv-basicstudies%22%7D%2C"  # {"id":"RSI@tv-basicstudies"},
-        "%7B%22id%22%3A%22PivotPointsStandard%40tv-basicstudies%22%7D"  # {"id":"PivotPointsStandard@tv-basicstudies"}
-        "%5D"  # ]
-    )
+    # embed-widget/advanced-chart uses JSON config in URL hash fragment (no encoding needed)
     return (f'<div style="height:{h}px;background:#131722;border-radius:0 0 8px 8px;overflow:hidden;">'
-            f'<iframe src="https://s.tradingview.com/widgetembed/?frameElementId=tv_{sym}'
-            f'&symbol={pair}&interval=240&hidesidetoolbar=0&symboledit=1&saveimage=0'
-            f'&toolbarbg=131722&theme=dark&style=1&timezone=Etc%2FUTC&withdateranges=1'
-            f'&allow_symbol_change=1&studies={studies}'
+            f'<iframe src="https://s.tradingview.com/embed-widget/advanced-chart/?locale=de_DE#'
+            f'{{"autosize":true,"symbol":"{pair}","interval":"240","timezone":"Etc/UTC",'
+            f'"theme":"dark","style":"1","locale":"de_DE","allow_symbol_change":true,'
+            f'"hide_side_toolbar":false,"withdateranges":true,"calendar":false,'
+            f'"studies":["STD;RSI","STD;Pivot%1Points%1Standard"],'
+            f'"support_host":"https://www.tradingview.com"}}'
             f'" style="width:100%;height:{h}px;border:none;"></iframe></div>')
 
 # ============================================================
