@@ -268,7 +268,6 @@ def render_rows_with_chart(dataframe, tab_key, max_rows=60):
         st.markdown(crow_html(row), unsafe_allow_html=True)
         # Inline chart button
         if st.button(f"📈 {sym}", key=f"btn_{tab_key}_{sym}", use_container_width=False):
-            # Toggle: click same coin = close, click different = switch
             if st.session_state.get(chart_state_key)==sym:
                 st.session_state[chart_state_key]=None
             else:
@@ -276,11 +275,37 @@ def render_rows_with_chart(dataframe, tab_key, max_rows=60):
             st.rerun()
         # Show chart if this coin is selected
         if st.session_state.get(chart_state_key)==sym:
-            st.components.v1.html(tv_iframe(sym), height=440)
+            # Chart mode toggle
+            mode_key = f"cmode_{tab_key}_{sym}"
+            bc1, bc2, _ = st.columns([1,1,4])
+            with bc1:
+                if st.button("📊 Simple (RSI)", key=f"cs_{tab_key}_{sym}",
+                    use_container_width=True, type="primary" if st.session_state.get(mode_key,"simple")=="simple" else "secondary"):
+                    st.session_state[mode_key]="simple"; st.rerun()
+            with bc2:
+                if st.button("📈 Pro (RSI+Pivot)", key=f"cp_{tab_key}_{sym}",
+                    use_container_width=True, type="primary" if st.session_state.get(mode_key,"simple")=="pro" else "secondary"):
+                    st.session_state[mode_key]="pro"; st.rerun()
+            if st.session_state.get(mode_key,"simple")=="pro":
+                st.components.v1.html(tv_chart_pro(sym), height=480)
+            else:
+                st.components.v1.html(tv_chart_simple(sym), height=440)
 
-def tv_iframe(sym, h=420):
+def tv_chart_simple(sym, h=420):
+    """Clean widgetembed chart with RSI only — fast, compact."""
     pair=f"BINANCE:{sym}USDT"
-    uid=f"tv_{sym}_{h}"
+    return (f'<div style="height:{h}px;background:#131722;border-radius:0 0 8px 8px;overflow:hidden;">'
+            f'<iframe src="https://s.tradingview.com/widgetembed/?frameElementId=tv_{sym}'
+            f'&symbol={pair}&interval=240&hidesidetoolbar=0&symboledit=1&saveimage=0'
+            f'&toolbarbg=131722&theme=dark&style=1&timezone=Etc%2FUTC&withdateranges=1'
+            f'&allow_symbol_change=1'
+            f'&studies=RSI%40tv-basicstudies'
+            f'" style="width:100%;height:{h}px;border:none;"></iframe></div>')
+
+def tv_chart_pro(sym, h=460):
+    """Full TradingView widget with RSI + Pivot Points Standard."""
+    pair=f"BINANCE:{sym}USDT"
+    uid=f"tv_pro_{sym}_{h}"
     return f'''<div id="{uid}" style="height:{h}px;background:#131722;border-radius:0 0 8px 8px;overflow:hidden;"></div>
 <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
 <script type="text/javascript">
@@ -626,9 +651,21 @@ with tab_det:
 </div></div>''', unsafe_allow_html=True)
 
         # =============================================
-        # TradingView Chart
+        # TradingView Chart with mode toggle
         # =============================================
-        st.components.v1.html(tv_iframe(sel,500),height=520)
+        dc1, dc2, _ = st.columns([1,1,4])
+        with dc1:
+            if st.button("📊 Simple (RSI)", key="dc_simple",
+                use_container_width=True, type="primary" if st.session_state.get("det_cmode","simple")=="simple" else "secondary"):
+                st.session_state["det_cmode"]="simple"; st.rerun()
+        with dc2:
+            if st.button("📈 Pro (RSI+Pivot)", key="dc_pro",
+                use_container_width=True, type="primary" if st.session_state.get("det_cmode","simple")=="pro" else "secondary"):
+                st.session_state["det_cmode"]="pro"; st.rerun()
+        if st.session_state.get("det_cmode","simple")=="pro":
+            st.components.v1.html(tv_chart_pro(sel,500),height=520)
+        else:
+            st.components.v1.html(tv_chart_simple(sel,500),height=520)
 
         # =============================================
         # Plotly Key Levels Chart (S/R + Fibonacci on candlesticks)
