@@ -287,11 +287,11 @@ def render_rows_with_chart(dataframe, tab_key, max_rows=60):
                     use_container_width=True, type="primary" if st.session_state.get(mode_key,"simple")=="pro" else "secondary"):
                     st.session_state[mode_key]="pro"; st.rerun()
             if st.session_state.get(mode_key,"simple")=="pro":
-                st.components.v1.html(tv_chart_pro(sym), height=480)
+                st.components.v1.html(tv_chart_pro(sym), height=630)
             else:
-                st.components.v1.html(tv_chart_simple(sym), height=440)
+                st.components.v1.html(tv_chart_simple(sym), height=580)
 
-def tv_chart_simple(sym, h=420):
+def tv_chart_simple(sym, h=560):
     """Clean widgetembed chart with RSI only — fast, compact."""
     pair=f"BINANCE:{sym}USDT"
     return (f'<div style="height:{h}px;background:#131722;border-radius:0 0 8px 8px;overflow:hidden;">'
@@ -302,7 +302,7 @@ def tv_chart_simple(sym, h=420):
             f'&studies=RSI%40tv-basicstudies'
             f'" style="width:100%;height:{h}px;border:none;"></iframe></div>')
 
-def tv_chart_pro(sym, h=460):
+def tv_chart_pro(sym, h=610):
     """Full TradingView widget with RSI + Pivot Points Standard (Fibonacci)."""
     pair=f"BINANCE:{sym}USDT"
     uid=f"tv_pro_{sym}_{h}"
@@ -666,9 +666,9 @@ with tab_det:
                 use_container_width=True, type="primary" if st.session_state.get("det_cmode","simple")=="pro" else "secondary"):
                 st.session_state["det_cmode"]="pro"; st.rerun()
         if st.session_state.get("det_cmode","simple")=="pro":
-            st.components.v1.html(tv_chart_pro(sel,500),height=520)
+            st.components.v1.html(tv_chart_pro(sel,670),height=690)
         else:
-            st.components.v1.html(tv_chart_simple(sel,500),height=520)
+            st.components.v1.html(tv_chart_simple(sel,670),height=690)
 
         # =============================================
         # Plotly Key Levels Chart (S/R + Fibonacci on candlesticks)
