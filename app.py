@@ -654,21 +654,30 @@ with tab_det:
 </div></div>''', unsafe_allow_html=True)
 
         # =============================================
-        # TradingView Chart with mode toggle
+        # TradingView Chart — nur bei Klick laden (verhindert Firewall-Blockade)
         # =============================================
-        dc1, dc2, _ = st.columns([1,1,4])
+        det_chart_key = "det_chart_open"
+        dc1, dc2, dc3, _ = st.columns([1,1,1,3])
         with dc1:
-            if st.button("📊 Simple (RSI)", key="dc_simple",
-                use_container_width=True, type="primary" if st.session_state.get("det_cmode","simple")=="simple" else "secondary"):
-                st.session_state["det_cmode"]="simple"; st.rerun()
+            if st.button("📊 Simple (RSI)", key="dc_simple", use_container_width=True,
+                type="primary" if st.session_state.get("det_cmode")=="simple" else "secondary"):
+                st.session_state["det_cmode"]="simple"; st.session_state[det_chart_key]=True; st.rerun()
         with dc2:
-            if st.button("📈 Pro (RSI+Pivot)", key="dc_pro",
-                use_container_width=True, type="primary" if st.session_state.get("det_cmode","simple")=="pro" else "secondary"):
-                st.session_state["det_cmode"]="pro"; st.rerun()
-        if st.session_state.get("det_cmode","simple")=="pro":
-            st.components.v1.html(tv_chart_pro(sel,670),height=690)
-        else:
-            st.components.v1.html(tv_chart_simple(sel,670),height=690)
+            if st.button("📈 Pro (RSI+Pivot)", key="dc_pro", use_container_width=True,
+                type="primary" if st.session_state.get("det_cmode")=="pro" else "secondary"):
+                st.session_state["det_cmode"]="pro"; st.session_state[det_chart_key]=True; st.rerun()
+        with dc3:
+            if st.session_state.get(det_chart_key):
+                if st.button("❌ Chart schließen", key="dc_close", use_container_width=True):
+                    st.session_state[det_chart_key]=False; st.session_state["det_cmode"]=None; st.rerun()
+
+        if st.session_state.get(det_chart_key) and st.session_state.get("det_cmode"):
+            if st.session_state["det_cmode"]=="pro":
+                st.components.v1.html(tv_chart_pro(sel,670),height=690)
+            else:
+                st.components.v1.html(tv_chart_simple(sel,670),height=690)
+        elif not st.session_state.get(det_chart_key):
+            st.info("💡 Klicke **Simple** oder **Pro** um den TradingView-Chart zu laden.")
 
         # =============================================
         # Plotly Key Levels Chart (S/R + Fibonacci on candlesticks)
