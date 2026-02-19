@@ -222,7 +222,7 @@ def get_coingecko_ohlc(symbol: str, days: int = 7) -> pd.DataFrame:
 # SMART FETCHING (CCXT → CoinGecko fallback)
 # ============================================================
 
-@st.cache_data(ttl=120, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def fetch_klines_smart(symbol: str, interval: str) -> pd.DataFrame:
     """
     Fetch klines with automatic fallback:
