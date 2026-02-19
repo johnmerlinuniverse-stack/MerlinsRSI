@@ -303,7 +303,7 @@ def tv_chart_simple(sym, h=420):
             f'" style="width:100%;height:{h}px;border:none;"></iframe></div>')
 
 def tv_chart_pro(sym, h=460):
-    """Full TradingView widget with RSI + Pivot Points Standard."""
+    """Full TradingView widget with RSI + Pivot Points Standard (Fibonacci)."""
     pair=f"BINANCE:{sym}USDT"
     uid=f"tv_pro_{sym}_{h}"
     return f'''<div id="{uid}" style="height:{h}px;background:#131722;border-radius:0 0 8px 8px;overflow:hidden;"></div>
@@ -328,7 +328,10 @@ new TradingView.widget({{
   "studies": [
     "RSI@tv-basicstudies",
     "PivotPointsStandard@tv-basicstudies"
-  ]
+  ],
+  "studies_overrides": {{
+    "Pivot Points Standard.kind": "Fibonacci"
+  }}
 }});
 </script>'''
 
