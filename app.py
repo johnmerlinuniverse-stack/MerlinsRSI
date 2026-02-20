@@ -528,8 +528,23 @@ with tab_hm:
     if rc_col in df.columns:
         avail=[c for c in ["symbol",rc_col,"price","change_24h","signal","rank","coin_name","change_1h","change_7d","change_30d",rp_col,"rsi_1D" if htf=="4h" else "rsi_4h"] if c in df.columns]
         pdf=df[avail].copy().dropna(subset=[rc_col])
-        if hx=="Coin Rank": pdf["x"]=pdf["rank"].clip(upper=200)
-        else: np.random.seed(42); pdf["x"]=np.random.uniform(0,100,len(pdf))
+
+        if hx=="Coin Rank":
+            # Robust rank distribution: coins without CoinGecko rank get position based on list order
+            # This prevents all rank-999 coins from clustering on a vertical line
+            pdf = pdf.copy()
+            has_rank = pdf["rank"] < 999
+            max_real_rank = int(pdf.loc[has_rank, "rank"].max()) if has_rank.any() else 100
+
+            # Coins without rank: assign incrementing positions after the last real rank
+            if (~has_rank).any():
+                n_missing = (~has_rank).sum()
+                fake_ranks = np.arange(max_real_rank + 5, max_real_rank + 5 + n_missing * 2, 2)
+                pdf.loc[~has_rank, "rank"] = fake_ranks[:n_missing]
+
+            pdf["x"] = pdf["rank"].astype(float)
+        else:
+            np.random.seed(42); pdf["x"]=np.random.uniform(0,100,len(pdf))
 
         # 4-color dots + orange for search
         def dc(sig,sym):
@@ -576,10 +591,12 @@ with tab_hm:
         fig.add_hline(y=av,line_dash="dashdot",line_color="rgba(255,215,0,0.6)",line_width=1.5,annotation_text=f"AVG RSI: {av:.1f}",annotation_font_color="#FFD700")
         # Layout
         show_xgrid = hx=="Coin Rank"
+        x_max_val = pdf["x"].max() if not pdf.empty else 200
+        x_dtick = 20 if x_max_val <= 200 else 30
         fig.update_layout(
             title=dict(text=f"Crypto Market RSI({htf}) Heatmap<br><sup>{datetime.now().strftime('%d/%m/%Y %H:%M')} UTC by Merlin Scanner</sup>",font=dict(size=16,color="white"),x=0.5),
             template="plotly_dark",paper_bgcolor="#0E1117",plot_bgcolor="#0E1117",height=700,
-            xaxis=dict(showticklabels=show_xgrid,showgrid=show_xgrid,gridcolor="rgba(255,255,255,0.06)",zeroline=False,title="Coin Rank" if show_xgrid else "",dtick=20),
+            xaxis=dict(showticklabels=show_xgrid,showgrid=show_xgrid,gridcolor="rgba(255,255,255,0.06)",zeroline=False,title="Coin Rank" if show_xgrid else "",dtick=x_dtick,range=[0, x_max_val + 10]),
             yaxis=dict(title=f"RSI ({htf})",range=[15,90],gridcolor="rgba(255,255,255,0.05)"),
             showlegend=False,margin=dict(l=50,r=20,t=60,b=30))
         st.plotly_chart(fig,use_container_width=True)
