@@ -171,11 +171,14 @@ def scan_all(coins, tfs):
     if not mkt_df.empty:
         for _, m in mkt_df.iterrows(): mkt_lk[m.get("symbol","").upper()] = m
 
+    # Fetch global data for confluence
+    fg = fetch_fear_greed_index()
+    fear_greed_val = fg.get("value", None)
+    funding_rates = fetch_funding_rates_batch()
+
     coin_list = list(coins)
 
     # --- PHASE 1: Parallel klines fetch (biggest bottleneck) ---
-    # NOTE: Fear/Greed + Funding Rates are fetched OUTSIDE scan_all
-    #       to avoid rate-limiting the kline requests!
     klines_cache = {}
     fetch_tasks = [(sym, tf) for sym in coin_list for tf in all_tfs]
 
@@ -257,11 +260,11 @@ def scan_all(coins, tfs):
             r["bb_pct"] = bb_d.get("bb_pct", 50)
             r["bb_width"] = bb_d.get("bb_width", 0)
 
-            # Funding Rate — fetched lazily outside scan_all, stored as None here
-            r["funding_rate"] = None
+            # Funding Rate for this symbol
+            fr_val = funding_rates.get(sym, None)
+            r["funding_rate"] = fr_val
 
-            # Compute individual scores (ALL factors except funding_rate + fear_greed,
-            # which are injected later outside scan_all to avoid rate-limit issues)
+            # Compute individual scores (ALL factors)
             individual = compute_individual_scores(
                 rsi_4h=r.get("rsi_4h",50),
                 rsi_1d=r.get("rsi_1D",50),
@@ -272,8 +275,8 @@ def scan_all(coins, tfs):
                 ema_data=ema_d,
                 divergence_data=div_d,
                 bb_data=bb_d,
-                funding_rate=None,
-                fear_greed=None,
+                funding_rate=fr_val,
+                fear_greed=fear_greed_val,
             )
             # Store individual scores as JSON for dynamic calculation
             r["ind_scores"] = json.dumps(individual["scores"])
@@ -290,76 +293,15 @@ def scan_all(coins, tfs):
                        "bb_squeeze":False,"bb_pct":50,"bb_width":0,"funding_rate":None,
                        "ind_scores":"{}","ind_reasons":"{}"})
         results.append(r)
-    return pd.DataFrame(results) if results else pd.DataFrame()
+    return pd.DataFrame(results) if results else pd.DataFrame(), fear_greed_val
 
 # ============================================================
 # LOAD
 # ============================================================
 coins_to_scan = coin_source[:max_coins]
 tf_to_scan = selected_timeframes or ["4h","1D"]
-df = scan_all(tuple(coins_to_scan), tuple(tf_to_scan))
+df, fear_greed_val = scan_all(tuple(coins_to_scan), tuple(tf_to_scan))
 if df.empty: st.warning("⚠️ No data."); st.stop()
-
-# Fetch Fear & Greed and Funding Rates AFTER main scan (separate, cached, non-blocking)
-# These are fetched lazily to avoid rate-limiting the main kline requests
-@st.cache_data(ttl=600, show_spinner=False)
-def _get_global_sentiment():
-    """Fetch Fear & Greed + Funding Rates separately from main scan."""
-    try:
-        fg = fetch_fear_greed_index()
-        fgv = fg.get("value", None)
-    except Exception:
-        fgv = None
-    try:
-        fr = fetch_funding_rates_batch()
-    except Exception:
-        fr = {}
-    return fgv, fr
-
-fear_greed_val, funding_rates_map = _get_global_sentiment()
-
-# Inject funding rate + fear/greed scores into individual scores
-# This updates the ind_scores JSON so dynamic scoring uses these values
-if (fear_greed_val is not None or funding_rates_map) and "ind_scores" in df.columns:
-    from indicators import compute_individual_scores as _cis
-    updated_scores_col = []
-    updated_reasons_col = []
-    for _, row in df.iterrows():
-        try:
-            scores = json.loads(row.get("ind_scores", "{}"))
-            reasons = json.loads(row.get("ind_reasons", "{}"))
-
-            # Inject funding rate
-            sym = row["symbol"]
-            fr_val = funding_rates_map.get(sym, None) if funding_rates_map else None
-            if fr_val is not None:
-                if fr_val > 0.05:
-                    scores["funding_rate"] = -10; reasons["funding_rate"] = f"Funding Rate hoch ({fr_val:.4f})"
-                elif fr_val > 0.02:
-                    scores["funding_rate"] = -5; reasons["funding_rate"] = f"Funding Rate leicht hoch ({fr_val:.4f})"
-                elif fr_val < -0.05:
-                    scores["funding_rate"] = 10; reasons["funding_rate"] = f"Funding Rate negativ ({fr_val:.4f})"
-                elif fr_val < -0.02:
-                    scores["funding_rate"] = 5; reasons["funding_rate"] = f"Funding Rate leicht negativ ({fr_val:.4f})"
-
-            # Inject fear/greed
-            if fear_greed_val is not None:
-                if fear_greed_val <= 15:
-                    scores["fear_greed"] = 8; reasons["fear_greed"] = f"Extreme Fear ({fear_greed_val})"
-                elif fear_greed_val <= 30:
-                    scores["fear_greed"] = 4; reasons["fear_greed"] = f"Fear ({fear_greed_val})"
-                elif fear_greed_val >= 85:
-                    scores["fear_greed"] = -8; reasons["fear_greed"] = f"Extreme Greed ({fear_greed_val})"
-                elif fear_greed_val >= 70:
-                    scores["fear_greed"] = -4; reasons["fear_greed"] = f"Greed ({fear_greed_val})"
-
-            updated_scores_col.append(json.dumps(scores))
-            updated_reasons_col.append(json.dumps(reasons))
-        except Exception:
-            updated_scores_col.append(row.get("ind_scores", "{}"))
-            updated_reasons_col.append(row.get("ind_reasons", "{}"))
-    df["ind_scores"] = updated_scores_col
-    df["ind_reasons"] = updated_reasons_col
 
 # ============================================================
 # DYNAMIC CONFLUENCE SCORE HELPER
