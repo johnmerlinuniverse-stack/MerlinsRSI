@@ -766,3 +766,4 @@ def multi_tf_rsi_summary(rsi_values: dict) -> dict:
     elif bearish > bullish: conf = "LEAN_SELL"
     else: conf = "NEUTRAL"
     return {"confluence": conf, "bullish_count": bullish, "bearish_count": bearish, "total": total}
+
