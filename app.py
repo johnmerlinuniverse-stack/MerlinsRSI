@@ -300,66 +300,8 @@ tf_to_scan = selected_timeframes or ["4h","1D"]
 df = scan_all(tuple(coins_to_scan), tuple(tf_to_scan))
 if df.empty: st.warning("⚠️ No data."); st.stop()
 
-# Fetch Fear & Greed and Funding Rates AFTER main scan (separate, cached, non-blocking)
-# These are fetched lazily to avoid rate-limiting the main kline requests
-@st.cache_data(ttl=600, show_spinner=False)
-def _get_global_sentiment():
-    """Fetch Fear & Greed + Funding Rates separately from main scan."""
-    try:
-        fg = fetch_fear_greed_index()
-        fgv = fg.get("value", None)
-    except Exception:
-        fgv = None
-    try:
-        fr = fetch_funding_rates_batch()
-    except Exception:
-        fr = {}
-    return fgv, fr
-
-fear_greed_val, funding_rates_map = _get_global_sentiment()
-
-# Inject funding rate + fear/greed scores into individual scores
-# This updates the ind_scores JSON so dynamic scoring uses these values
-if (fear_greed_val is not None or funding_rates_map) and "ind_scores" in df.columns:
-    from indicators import compute_individual_scores as _cis
-    updated_scores_col = []
-    updated_reasons_col = []
-    for _, row in df.iterrows():
-        try:
-            scores = json.loads(row.get("ind_scores", "{}"))
-            reasons = json.loads(row.get("ind_reasons", "{}"))
-
-            # Inject funding rate
-            sym = row["symbol"]
-            fr_val = funding_rates_map.get(sym, None) if funding_rates_map else None
-            if fr_val is not None:
-                if fr_val > 0.05:
-                    scores["funding_rate"] = -10; reasons["funding_rate"] = f"Funding Rate hoch ({fr_val:.4f})"
-                elif fr_val > 0.02:
-                    scores["funding_rate"] = -5; reasons["funding_rate"] = f"Funding Rate leicht hoch ({fr_val:.4f})"
-                elif fr_val < -0.05:
-                    scores["funding_rate"] = 10; reasons["funding_rate"] = f"Funding Rate negativ ({fr_val:.4f})"
-                elif fr_val < -0.02:
-                    scores["funding_rate"] = 5; reasons["funding_rate"] = f"Funding Rate leicht negativ ({fr_val:.4f})"
-
-            # Inject fear/greed
-            if fear_greed_val is not None:
-                if fear_greed_val <= 15:
-                    scores["fear_greed"] = 8; reasons["fear_greed"] = f"Extreme Fear ({fear_greed_val})"
-                elif fear_greed_val <= 30:
-                    scores["fear_greed"] = 4; reasons["fear_greed"] = f"Fear ({fear_greed_val})"
-                elif fear_greed_val >= 85:
-                    scores["fear_greed"] = -8; reasons["fear_greed"] = f"Extreme Greed ({fear_greed_val})"
-                elif fear_greed_val >= 70:
-                    scores["fear_greed"] = -4; reasons["fear_greed"] = f"Greed ({fear_greed_val})"
-
-            updated_scores_col.append(json.dumps(scores))
-            updated_reasons_col.append(json.dumps(reasons))
-        except Exception:
-            updated_scores_col.append(row.get("ind_scores", "{}"))
-            updated_reasons_col.append(row.get("ind_reasons", "{}"))
-    df["ind_scores"] = updated_scores_col
-    df["ind_reasons"] = updated_reasons_col
+# Fear & Greed and Funding Rates are fetched ONLY in Confluence tab (lazy)
+fear_greed_val = None  # populated lazily in Confluence tab
 
 # ============================================================
 # DYNAMIC CONFLUENCE SCORE HELPER
@@ -686,6 +628,61 @@ with tab_mc:
 # ============================================================
 with tab_conf:
     st.markdown("### 🎯 Confluence Scanner")
+
+    # --- LAZY LOAD: Fear & Greed + Funding Rates (ONLY here, not on main scan) ---
+    @st.cache_data(ttl=600, show_spinner=False)
+    def _lazy_fear_greed():
+        try:
+            fg = fetch_fear_greed_index()
+            return fg.get("value", None)
+        except Exception:
+            return None
+
+    @st.cache_data(ttl=300, show_spinner=False)
+    def _lazy_funding_rates():
+        try:
+            return fetch_funding_rates_batch()
+        except Exception:
+            return {}
+
+    fear_greed_val = _lazy_fear_greed()
+    funding_rates_map = _lazy_funding_rates()
+
+    # Inject funding rate + fear/greed into ind_scores if available
+    if (fear_greed_val is not None or funding_rates_map) and "ind_scores" in df.columns:
+        for idx, row in df.iterrows():
+            try:
+                scores = json.loads(row.get("ind_scores", "{}"))
+                reasons = json.loads(row.get("ind_reasons", "{}"))
+                sym = row["symbol"]
+
+                # Inject funding rate
+                fr_val = funding_rates_map.get(sym, None) if funding_rates_map else None
+                if fr_val is not None:
+                    if fr_val > 0.05:
+                        scores["funding_rate"] = -10; reasons["funding_rate"] = f"Funding Rate hoch ({fr_val:.4f})"
+                    elif fr_val > 0.02:
+                        scores["funding_rate"] = -5; reasons["funding_rate"] = f"Funding leicht hoch ({fr_val:.4f})"
+                    elif fr_val < -0.05:
+                        scores["funding_rate"] = 10; reasons["funding_rate"] = f"Funding negativ ({fr_val:.4f})"
+                    elif fr_val < -0.02:
+                        scores["funding_rate"] = 5; reasons["funding_rate"] = f"Funding leicht negativ ({fr_val:.4f})"
+
+                # Inject fear/greed (same value for all coins)
+                if fear_greed_val is not None:
+                    if fear_greed_val <= 15:
+                        scores["fear_greed"] = 8; reasons["fear_greed"] = f"Extreme Fear ({fear_greed_val})"
+                    elif fear_greed_val <= 30:
+                        scores["fear_greed"] = 4; reasons["fear_greed"] = f"Fear ({fear_greed_val})"
+                    elif fear_greed_val >= 85:
+                        scores["fear_greed"] = -8; reasons["fear_greed"] = f"Extreme Greed ({fear_greed_val})"
+                    elif fear_greed_val >= 70:
+                        scores["fear_greed"] = -4; reasons["fear_greed"] = f"Greed ({fear_greed_val})"
+
+                df.at[idx, "ind_scores"] = json.dumps(scores)
+                df.at[idx, "ind_reasons"] = json.dumps(reasons)
+            except Exception:
+                pass
 
     # --- FILTER CHECKBOXES ---
     with st.expander("⚙️ Confluence Filter konfigurieren", expanded=True):
