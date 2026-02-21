@@ -71,15 +71,15 @@ def get_exchange_status() -> dict:
 
 @st.cache_resource(show_spinner=False)
 def get_futures_exchange() -> tuple:
-    """Find the first reachable futures exchange for funding rate data."""
+    """Find the first reachable futures exchange for funding rate data.
+    Uses shorter timeout to avoid blocking main app."""
     for name, exchange_cls in FUTURES_EXCHANGE_PRIORITY:
         try:
             ex = exchange_cls({
                 "enableRateLimit": True,
-                "timeout": 10000,
-                "options": {"defaultType": "swap"},  # perpetual futures
+                "timeout": 5000,  # shorter timeout — don't block main app
+                "options": {"defaultType": "swap"},
             })
-            # Quick test
             ex.load_markets()
             return (name, ex)
         except Exception:
