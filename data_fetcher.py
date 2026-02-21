@@ -82,6 +82,7 @@ def get_exchange_status() -> dict:
 def fetch_ohlcv_ccxt(symbol: str, timeframe: str, limit: int = KLINE_LIMIT) -> pd.DataFrame:
     """
     Fetch OHLCV data via CCXT from the best available exchange.
+    Includes retry with backoff to handle rate-limiting.
     Returns DataFrame with: open_time, open, high, low, close, volume
     """
     name, ex = get_working_exchange()
@@ -91,24 +92,31 @@ def fetch_ohlcv_ccxt(symbol: str, timeframe: str, limit: int = KLINE_LIMIT) -> p
     pair = f"{symbol}/USDT"
     tf = TF_MAP.get(timeframe, timeframe)
 
-    try:
-        ohlcv = ex.fetch_ohlcv(pair, tf, limit=limit)
-        if not ohlcv:
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            ohlcv = ex.fetch_ohlcv(pair, tf, limit=limit)
+            if not ohlcv:
+                return pd.DataFrame()
+
+            df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
+            df["open_time"] = pd.to_datetime(df["timestamp"], unit="ms")
+
+            for col in ["open", "high", "low", "close", "volume"]:
+                df[col] = df[col].astype(float)
+
+            df["quote_volume"] = df["volume"] * df["close"]
+            df["trades"] = 0
+
+            return df[["open_time", "open", "high", "low", "close", "volume", "quote_volume", "trades"]]
+
+        except Exception as e:
+            err_str = str(e).lower()
+            # Retry on rate limit or timeout errors
+            if attempt < max_retries - 1 and ("429" in err_str or "rate" in err_str or "timeout" in err_str or "timed out" in err_str):
+                time.sleep(0.5 * (attempt + 1))  # 0.5s, 1.0s backoff
+                continue
             return pd.DataFrame()
-
-        df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
-        df["open_time"] = pd.to_datetime(df["timestamp"], unit="ms")
-
-        for col in ["open", "high", "low", "close", "volume"]:
-            df[col] = df[col].astype(float)
-
-        df["quote_volume"] = df["volume"] * df["close"]
-        df["trades"] = 0
-
-        return df[["open_time", "open", "high", "low", "close", "volume", "quote_volume", "trades"]]
-
-    except Exception:
-        return pd.DataFrame()
 
 
 def fetch_ticker_ccxt(symbol: str) -> dict:
@@ -227,12 +235,13 @@ def get_coingecko_ohlc(symbol: str, days: int = 7) -> pd.DataFrame:
 # ============================================================
 
 @st.cache_data(ttl=300, show_spinner=False)
-def fetch_klines_smart(symbol: str, interval: str) -> pd.DataFrame:
-    """
-    Fetch klines with automatic fallback:
-    1. CCXT (auto-selected best exchange)
-    2. CoinGecko OHLC
-    """
+def _fetch_klines_cached(symbol: str, interval: str) -> pd.DataFrame:
+    """Internal cached fetch — only called when we have real data."""
+    return _fetch_klines_uncached(symbol, interval)
+
+
+def _fetch_klines_uncached(symbol: str, interval: str) -> pd.DataFrame:
+    """Actual fetch logic without caching."""
     # Try CCXT first
     df = fetch_ohlcv_ccxt(symbol, interval)
     if not df.empty and len(df) >= 15:
@@ -246,6 +255,28 @@ def fetch_klines_smart(symbol: str, interval: str) -> pd.DataFrame:
         return df
 
     return pd.DataFrame()
+
+
+def fetch_klines_smart(symbol: str, interval: str) -> pd.DataFrame:
+    """
+    Fetch klines with automatic fallback:
+    1. CCXT (auto-selected best exchange)
+    2. CoinGecko OHLC
+
+    IMPORTANT: Empty results are NOT cached to prevent 5-min lockout
+    when rate-limiting causes temporary failures.
+    """
+    # Try cached version first
+    try:
+        df = _fetch_klines_cached(symbol, interval)
+        if not df.empty and len(df) >= 15:
+            return df
+    except Exception:
+        pass
+
+    # Cache miss or cached empty — try fresh fetch
+    df = _fetch_klines_uncached(symbol, interval)
+    return df
 
 
 @st.cache_data(ttl=300, show_spinner=False)
