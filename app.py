@@ -198,11 +198,12 @@ def scan_all(coins, tfs, smc=False):
     def _fetch_one(sym_tf):
         sym, tf = sym_tf
         try:
+            time.sleep(0.05)  # 50ms spacing to reduce rate-limit pressure
             return sym_tf, fetch_klines_smart(sym, TIMEFRAMES.get(tf, tf))
         except Exception:
             return sym_tf, pd.DataFrame()
 
-    workers = 6 if connected else 3
+    workers = 3 if connected else 2  # Keep low to avoid rate-limiting
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {pool.submit(_fetch_one, t): t for t in fetch_tasks}
         for fut in as_completed(futures):
@@ -211,6 +212,11 @@ def scan_all(coins, tfs, smc=False):
                 klines_cache[key] = df_k
             except Exception:
                 pass
+
+    # Track kline fetch success for diagnostics
+    kl_total = len(fetch_tasks)
+    kl_ok = sum(1 for v in klines_cache.values() if not v.empty and len(v) >= 15)
+    kl_fail = kl_total - kl_ok
 
     # --- PHASE 2: Process results (CPU-only, fast) ---
     results = []
@@ -268,6 +274,30 @@ coins_to_scan = coin_source[:max_coins]
 tf_to_scan = selected_timeframes or ["4h","1D"]
 df = scan_all(tuple(coins_to_scan), tuple(tf_to_scan), False)
 if df.empty: st.warning("⚠️ No data."); st.stop()
+
+# ============================================================
+# DIAGNOSTICS (detect kline failures from RSI=50.0 pattern)
+# ============================================================
+if "rsi_4h" in df.columns:
+    rsi_ok = len(df[df["rsi_4h"] != 50.0])
+    rsi_fail = len(df[df["rsi_4h"] == 50.0])
+    total = len(df)
+    if rsi_fail > total * 0.5:
+        st.warning(f"⚠️ **Kline-Fetch Problem erkannt:** {rsi_fail}/{total} Coins haben RSI=50.0 (keine Daten). "
+                   f"Das deutet auf Rate-Limiting der Exchange hin. Klicke **🔄 Refresh** in der Sidebar um den Cache zu leeren und erneut zu laden.")
+    with st.expander(f"🔧 Diagnostik — {rsi_ok}/{total} Coins mit echten RSI-Daten", expanded=False):
+        ex_info = get_exchange_status()
+        st.markdown(f"**Exchange:** {ex_info['active_exchange'].upper()} ({'✅ verbunden' if ex_info['connected'] else '❌ nicht verbunden'})")
+        st.markdown(f"**Klines OK:** {rsi_ok} / {total} ({rsi_ok/total*100:.0f}%)")
+        st.markdown(f"**Klines fehlend:** {rsi_fail} / {total}")
+        if rsi_fail > 0:
+            fail_coins = df[df["rsi_4h"] == 50.0]["symbol"].tolist()[:20]
+            st.markdown(f"**Betroffene Coins (max 20):** {', '.join(fail_coins)}")
+            st.markdown("**Mögliche Ursachen:**")
+            st.markdown("- Exchange Rate-Limiting (zu viele parallele Requests)")
+            st.markdown("- Coin nicht auf der Exchange gelistet (z.B. USD1, WLFI)")
+            st.markdown("- Temporärer Netzwerkfehler")
+            st.caption("💡 Tipp: Reduziere die Anzahl der Coins in der Sidebar oder warte 5 Min. und klicke Refresh.")
 
 # ============================================================
 # HELPERS
