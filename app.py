@@ -15,13 +15,37 @@ from config import (
 )
 from data_fetcher import (
     fetch_all_market_data, fetch_klines_smart, fetch_all_tickers, get_exchange_status,
+    fetch_fear_greed_index, fetch_funding_rates_batch,
 )
 from indicators import (
     calculate_rsi, calculate_macd, calculate_volume_analysis,
     detect_order_blocks, detect_fair_value_gaps, detect_market_structure,
     generate_confluence_signal, calculate_stoch_rsi,
+    calculate_ema_alignment_fast, detect_rsi_divergence, calculate_bb_squeeze,
+    compute_individual_scores, compute_confluence_total,
 )
 from alerts import check_and_send_alerts
+
+# ============================================================
+# CONFLUENCE FILTER DEFAULTS (session state)
+# ============================================================
+CONFLUENCE_FILTERS = {
+    "rsi_4h":         {"label": "📊 RSI 4h",           "default": True,  "weight": "±30", "desc": "Der wichtigste Faktor — Basis der App"},
+    "rsi_1d":         {"label": "📈 RSI 1D",           "default": True,  "weight": "±20", "desc": "Bestätigung vom Tages-Trend"},
+    "macd":           {"label": "📉 MACD",             "default": True,  "weight": "±20", "desc": "Momentum-Richtung + Histogramm"},
+    "volume_obv":     {"label": "📊 Volume & OBV",     "default": True,  "weight": "±15", "desc": "Volumen + OBV-Richtung"},
+    "stoch_rsi":      {"label": "🔄 Stoch RSI",        "default": True,  "weight": "±12", "desc": "Feintuning K/D Crossover"},
+    "smart_money":    {"label": "🏦 Smart Money",      "default": False, "weight": "±15", "desc": "Order Blocks + Market Structure (BOS/CHoCH)"},
+    "ema_alignment":  {"label": "📏 EMA Alignment",    "default": False, "weight": "±12", "desc": "Preis vs EMA 9/21/50 Ausrichtung"},
+    "rsi_divergence": {"label": "🔀 RSI Divergenz",    "default": False, "weight": "±15", "desc": "Preis-RSI Divergenzen (Regular + Hidden)"},
+    "bollinger":      {"label": "📐 Bollinger Bands",   "default": False, "weight": "±10", "desc": "Squeeze-Erkennung + Band-Position"},
+    "funding_rate":   {"label": "💰 Funding Rate",     "default": False, "weight": "±10", "desc": "Futures Funding Rate (konträr)"},
+    "fear_greed":     {"label": "😱 Fear & Greed",     "default": False, "weight": "±8",  "desc": "Markt-Sentiment (konträr)"},
+}
+
+# Initialize session state for filters
+if "conf_filters" not in st.session_state:
+    st.session_state["conf_filters"] = {k: v["default"] for k, v in CONFLUENCE_FILTERS.items()}
 
 # ============================================================
 # SIGNAL ENGINE — matched to CryptoWaves.app behavior
@@ -128,8 +152,6 @@ with st.sidebar:
     selected_timeframes = st.multiselect("Heatmap-Timeframes",
         list(TIMEFRAMES.keys()), default=["4h", "1D"],
         help="Welche Timeframes im RSI-Heatmap-Dropdown zur Auswahl stehen")
-    show_smc = st.checkbox("Smart Money Concepts", value=False,
-        help="Order Blocks, Fair Value Gaps, Market Structure — braucht mehr Rechenzeit")
     st.markdown("---")
     if st.button("🔄 Refresh", use_container_width=True):
         st.cache_data.clear(); st.rerun()
@@ -139,7 +161,7 @@ with st.sidebar:
 # SCAN
 # ============================================================
 @st.cache_data(ttl=300, show_spinner="🧙‍♂️ Scanning crypto market...")
-def scan_all(coins, tfs, smc=False):
+def scan_all(coins, tfs):
     from concurrent.futures import ThreadPoolExecutor, as_completed
     core_tfs = ["1h", "4h", "1D", "1W"]
     all_tfs = list(dict.fromkeys(core_tfs + list(tfs)))
@@ -152,7 +174,9 @@ def scan_all(coins, tfs, smc=False):
     coin_list = list(coins)
 
     # --- PHASE 1: Parallel klines fetch (biggest bottleneck) ---
-    klines_cache = {}  # (sym, tf) → DataFrame
+    # NOTE: Fear/Greed + Funding Rates are fetched OUTSIDE scan_all
+    #       to avoid rate-limiting the kline requests!
+    klines_cache = {}
     fetch_tasks = [(sym, tf) for sym in coin_list for tf in all_tfs]
 
     def _fetch_one(sym_tf):
@@ -205,19 +229,66 @@ def scan_all(coins, tfs, smc=False):
             else: r[f"rsi_{tf}"],r[f"rsi_prev_{tf}"]=50.0,50.0; r[f"closes_{tf}"]="[]"
         r["signal"]=compute_signal(r.get("rsi_4h",50),r.get("rsi_prev_4h",50),r.get("rsi_1D",50))
         r["border_alpha"]=border_alpha(r.get("rsi_4h",50),r["signal"])
+
+        # --- COMPUTE ALL INDICATOR DATA for confluence ---
         ptf="4h" if "4h" in kld else (list(tfs)[0] if tfs else None)
         if ptf and ptf in kld:
             md=calculate_macd(kld[ptf]); r["macd_trend"]=md["trend"]; r["macd_histogram"]=md["histogram"]
             vd=calculate_volume_analysis(kld[ptf]); r["vol_trend"]=vd["vol_trend"]; r["vol_ratio"]=vd["vol_ratio"]; r["obv_trend"]=vd["obv_trend"]
             sk=calculate_stoch_rsi(kld[ptf]); r["stoch_rsi_k"]=sk["stoch_rsi_k"]; r["stoch_rsi_d"]=sk["stoch_rsi_d"]
-            if smc:
-                ob=detect_order_blocks(kld[ptf]); fv=detect_fair_value_gaps(kld[ptf]); ms=detect_market_structure(kld[ptf])
-                r["ob_signal"]=ob["ob_signal"]; r["fvg_signal"]=fv["fvg_signal"]; r["market_structure"]=ms["structure"]; r["bos"]=ms["break_of_structure"]
-            sc_d={"ob_signal":r.get("ob_signal","NONE"),"fvg_signal":r.get("fvg_signal","BALANCED"),"structure":r.get("market_structure","UNKNOWN")} if smc else None
-            cf=generate_confluence_signal(rsi_4h=r.get("rsi_4h",50),rsi_1d=r.get("rsi_1D",50),macd_data=md,volume_data=vd,smc_data=sc_d)
-            r["score"]=cf["score"]; r["confluence_rec"]=cf["recommendation"]; r["reasons"]=" | ".join(cf["reasons"][:3])
+
+            # Always compute SMC (used only when filter active)
+            ob=detect_order_blocks(kld[ptf]); fv=detect_fair_value_gaps(kld[ptf]); ms=detect_market_structure(kld[ptf])
+            r["ob_signal"]=ob["ob_signal"]; r["fvg_signal"]=fv["fvg_signal"]; r["market_structure"]=ms["structure"]; r["bos"]=ms["break_of_structure"]
+            smc_d={"ob_signal":ob["ob_signal"],"fvg_signal":fv["fvg_signal"],"structure":ms["structure"]}
+
+            # EMA Alignment
+            ema_d = calculate_ema_alignment_fast(kld[ptf])
+            r["ema_trend"] = ema_d.get("ema_trend", "NEUTRAL")
+
+            # RSI Divergence
+            div_d = detect_rsi_divergence(kld[ptf])
+            r["divergence"] = div_d.get("divergence", "NONE")
+            r["div_type"] = div_d.get("div_type", "NONE")
+
+            # Bollinger Squeeze
+            bb_d = calculate_bb_squeeze(kld[ptf])
+            r["bb_squeeze"] = bb_d.get("bb_squeeze", False)
+            r["bb_pct"] = bb_d.get("bb_pct", 50)
+            r["bb_width"] = bb_d.get("bb_width", 0)
+
+            # Funding Rate — fetched lazily outside scan_all, stored as None here
+            r["funding_rate"] = None
+
+            # Compute individual scores (ALL factors except funding_rate + fear_greed,
+            # which are injected later outside scan_all to avoid rate-limit issues)
+            individual = compute_individual_scores(
+                rsi_4h=r.get("rsi_4h",50),
+                rsi_1d=r.get("rsi_1D",50),
+                macd_data=md,
+                volume_data=vd,
+                stoch_rsi_data=sk,
+                smc_data=smc_d,
+                ema_data=ema_d,
+                divergence_data=div_d,
+                bb_data=bb_d,
+                funding_rate=None,
+                fear_greed=None,
+            )
+            # Store individual scores as JSON for dynamic calculation
+            r["ind_scores"] = json.dumps(individual["scores"])
+            r["ind_reasons"] = json.dumps(individual["reasons"])
+
+            # Also compute legacy score with default 5 filters for backward compat
+            default_filt = {"rsi_4h": True, "rsi_1d": True, "macd": True, "volume_obv": True, "stoch_rsi": True}
+            legacy = compute_confluence_total(individual, default_filt)
+            r["score"]=legacy["score"]; r["confluence_rec"]=legacy["recommendation"]; r["reasons"]=" | ".join(legacy["reasons"][:3])
         else:
-            r.update({"macd_trend":"NEUTRAL","macd_histogram":0,"vol_trend":"—","vol_ratio":1.0,"obv_trend":"—","stoch_rsi_k":50.0,"stoch_rsi_d":50.0,"score":0,"confluence_rec":"WAIT","reasons":""})
+            r.update({"macd_trend":"NEUTRAL","macd_histogram":0,"vol_trend":"—","vol_ratio":1.0,"obv_trend":"—",
+                       "stoch_rsi_k":50.0,"stoch_rsi_d":50.0,"score":0,"confluence_rec":"WAIT","reasons":"",
+                       "ema_trend":"NEUTRAL","divergence":"NONE","div_type":"NONE",
+                       "bb_squeeze":False,"bb_pct":50,"bb_width":0,"funding_rate":None,
+                       "ind_scores":"{}","ind_reasons":"{}"})
         results.append(r)
     return pd.DataFrame(results) if results else pd.DataFrame()
 
@@ -226,8 +297,100 @@ def scan_all(coins, tfs, smc=False):
 # ============================================================
 coins_to_scan = coin_source[:max_coins]
 tf_to_scan = selected_timeframes or ["4h","1D"]
-df = scan_all(tuple(coins_to_scan), tuple(tf_to_scan), show_smc)
+df = scan_all(tuple(coins_to_scan), tuple(tf_to_scan))
 if df.empty: st.warning("⚠️ No data."); st.stop()
+
+# Fetch Fear & Greed and Funding Rates AFTER main scan (separate, cached, non-blocking)
+# These are fetched lazily to avoid rate-limiting the main kline requests
+@st.cache_data(ttl=600, show_spinner=False)
+def _get_global_sentiment():
+    """Fetch Fear & Greed + Funding Rates separately from main scan."""
+    try:
+        fg = fetch_fear_greed_index()
+        fgv = fg.get("value", None)
+    except Exception:
+        fgv = None
+    try:
+        fr = fetch_funding_rates_batch()
+    except Exception:
+        fr = {}
+    return fgv, fr
+
+fear_greed_val, funding_rates_map = _get_global_sentiment()
+
+# Inject funding rate + fear/greed scores into individual scores
+# This updates the ind_scores JSON so dynamic scoring uses these values
+if (fear_greed_val is not None or funding_rates_map) and "ind_scores" in df.columns:
+    from indicators import compute_individual_scores as _cis
+    updated_scores_col = []
+    updated_reasons_col = []
+    for _, row in df.iterrows():
+        try:
+            scores = json.loads(row.get("ind_scores", "{}"))
+            reasons = json.loads(row.get("ind_reasons", "{}"))
+
+            # Inject funding rate
+            sym = row["symbol"]
+            fr_val = funding_rates_map.get(sym, None) if funding_rates_map else None
+            if fr_val is not None:
+                if fr_val > 0.05:
+                    scores["funding_rate"] = -10; reasons["funding_rate"] = f"Funding Rate hoch ({fr_val:.4f})"
+                elif fr_val > 0.02:
+                    scores["funding_rate"] = -5; reasons["funding_rate"] = f"Funding Rate leicht hoch ({fr_val:.4f})"
+                elif fr_val < -0.05:
+                    scores["funding_rate"] = 10; reasons["funding_rate"] = f"Funding Rate negativ ({fr_val:.4f})"
+                elif fr_val < -0.02:
+                    scores["funding_rate"] = 5; reasons["funding_rate"] = f"Funding Rate leicht negativ ({fr_val:.4f})"
+
+            # Inject fear/greed
+            if fear_greed_val is not None:
+                if fear_greed_val <= 15:
+                    scores["fear_greed"] = 8; reasons["fear_greed"] = f"Extreme Fear ({fear_greed_val})"
+                elif fear_greed_val <= 30:
+                    scores["fear_greed"] = 4; reasons["fear_greed"] = f"Fear ({fear_greed_val})"
+                elif fear_greed_val >= 85:
+                    scores["fear_greed"] = -8; reasons["fear_greed"] = f"Extreme Greed ({fear_greed_val})"
+                elif fear_greed_val >= 70:
+                    scores["fear_greed"] = -4; reasons["fear_greed"] = f"Greed ({fear_greed_val})"
+
+            updated_scores_col.append(json.dumps(scores))
+            updated_reasons_col.append(json.dumps(reasons))
+        except Exception:
+            updated_scores_col.append(row.get("ind_scores", "{}"))
+            updated_reasons_col.append(row.get("ind_reasons", "{}"))
+    df["ind_scores"] = updated_scores_col
+    df["ind_reasons"] = updated_reasons_col
+
+# ============================================================
+# DYNAMIC CONFLUENCE SCORE HELPER
+# ============================================================
+def get_dynamic_score(row, filters=None):
+    """Compute confluence score dynamically based on active filters."""
+    if filters is None:
+        filters = st.session_state.get("conf_filters", {k: v["default"] for k, v in CONFLUENCE_FILTERS.items()})
+    try:
+        scores = json.loads(row.get("ind_scores", "{}"))
+        reasons = json.loads(row.get("ind_reasons", "{}"))
+    except (json.JSONDecodeError, TypeError):
+        return {"score": 0, "recommendation": "WAIT", "reasons": [], "active_count": 0}
+    max_weights = {"rsi_4h": 30, "rsi_1d": 20, "macd": 20, "volume_obv": 15,
+                   "stoch_rsi": 12, "smart_money": 15, "ema_alignment": 12,
+                   "rsi_divergence": 15, "bollinger": 10, "funding_rate": 10, "fear_greed": 8}
+    individual = {"scores": scores, "reasons": reasons, "max_weights": max_weights}
+    return compute_confluence_total(individual, filters)
+
+def score_badge_html(row):
+    """Generate a small inline score badge for 24h Alerts and Market Cap views."""
+    cf = get_dynamic_score(row)
+    s = cf["score"]
+    if s >= 30: col = "#00FF7F"; ico = "⚡"
+    elif s >= 10: col = "#90EE90"; ico = "↑"
+    elif s <= -30: col = "#FF6347"; ico = "⚡"
+    elif s <= -10: col = "#FFA07A"; ico = "↓"
+    else: col = "#888"; ico = "–"
+    rec = cf["recommendation"]
+    active = cf["active_count"]
+    return f'<span style="font-size:10px;color:{col};background:{col}22;padding:1px 5px;border-radius:3px;margin-left:4px;" title="{rec} ({active} Filter)">{ico}{s}</span>'
 
 # ============================================================
 # HELPERS
@@ -272,6 +435,8 @@ def crow_html(row, charts=True):
         ch=f'<div class="charts"><div><div class="clbl">● 7d</div>{s7}</div><div><div class="clbl">● 30d</div>{s30}</div></div>'
     # Strong glow effect on signal label
     glow = f'text-shadow:0 0 8px {sc},0 0 16px {sc};' if is_strong_sell or is_strong_buy else ""
+    # Confluence score badge
+    sbadge = score_badge_html(row)
     r1h=row.get("rsi_1h",50); r4=row.get("rsi_4h",50); r1d=row.get("rsi_1D",50); r1w=row.get("rsi_1W",50)
     return f'''<div class="crow" style="{bdr}">
 <div class="ic">{icon(im)}</div>
@@ -279,7 +444,7 @@ def crow_html(row, charts=True):
 <div class="pl">Price: <b style="color:white;">{fp(row["price"])}</b></div>
 <div class="chs">Ch%: <span class="{cc(c1h)}">{c1h:+.2f}%</span> <span class="{cc(c24)}">{c24:+.2f}%</span> <span class="{cc(c7)}" style="font-weight:bold;">{c7:+.2f}%</span> <span class="{cc(c30)}">{c30:+.2f}%</span></div></div>
 {ch}
-<div class="sig"><span style="font-size:11px;color:#888;">Now:</span> <span class="sl" style="color:{sc};{glow}">{sig}</span>
+<div class="sig"><span style="font-size:11px;color:#888;">Now:</span> <span class="sl" style="color:{sc};{glow}">{sig}</span>{sbadge}
 <div class="rsi-row"><span class="rsi-pill">1h: <b style="color:{rsc(r1h)};">{r1h:.1f}</b></span><span class="rsi-pill" style="background:#252550;"><b style="color:{rsc(r4)};">{r4:.1f}</b> 4h</span><span class="rsi-pill" style="background:#252550;"><b style="color:{rsc(r1d)};">{r1d:.1f}</b> 1D</span><span class="rsi-pill">1W: <b style="color:{rsc(r1w)};">{r1w:.1f}</b></span></div>
 </div></div>'''
 
@@ -421,8 +586,23 @@ with tab_hm:
     if rc_col in df.columns:
         avail=[c for c in ["symbol",rc_col,"price","change_24h","signal","rank","coin_name","change_1h","change_7d","change_30d",rp_col,"rsi_1D" if htf=="4h" else "rsi_4h"] if c in df.columns]
         pdf=df[avail].copy().dropna(subset=[rc_col])
-        if hx=="Coin Rank": pdf["x"]=pdf["rank"].clip(upper=200)
-        else: np.random.seed(42); pdf["x"]=np.random.uniform(0,100,len(pdf))
+
+        if hx=="Coin Rank":
+            # Robust rank distribution: coins without CoinGecko rank get position based on list order
+            # This prevents all rank-999 coins from clustering on a vertical line
+            pdf = pdf.copy()
+            has_rank = pdf["rank"] < 999
+            max_real_rank = int(pdf.loc[has_rank, "rank"].max()) if has_rank.any() else 100
+
+            # Coins without rank: assign incrementing positions after the last real rank
+            if (~has_rank).any():
+                n_missing = (~has_rank).sum()
+                fake_ranks = np.arange(max_real_rank + 5, max_real_rank + 5 + n_missing * 2, 2)
+                pdf.loc[~has_rank, "rank"] = fake_ranks[:n_missing]
+
+            pdf["x"] = pdf["rank"].astype(float)
+        else:
+            np.random.seed(42); pdf["x"]=np.random.uniform(0,100,len(pdf))
 
         # 4-color dots + orange for search
         def dc(sig,sym):
@@ -469,10 +649,12 @@ with tab_hm:
         fig.add_hline(y=av,line_dash="dashdot",line_color="rgba(255,215,0,0.6)",line_width=1.5,annotation_text=f"AVG RSI: {av:.1f}",annotation_font_color="#FFD700")
         # Layout
         show_xgrid = hx=="Coin Rank"
+        x_max_val = pdf["x"].max() if not pdf.empty else 200
+        x_dtick = 20 if x_max_val <= 200 else 30
         fig.update_layout(
             title=dict(text=f"Crypto Market RSI({htf}) Heatmap<br><sup>{datetime.now().strftime('%d/%m/%Y %H:%M')} UTC by Merlin Scanner</sup>",font=dict(size=16,color="white"),x=0.5),
             template="plotly_dark",paper_bgcolor="#0E1117",plot_bgcolor="#0E1117",height=700,
-            xaxis=dict(showticklabels=show_xgrid,showgrid=show_xgrid,gridcolor="rgba(255,255,255,0.06)",zeroline=False,title="Coin Rank" if show_xgrid else "",dtick=20),
+            xaxis=dict(showticklabels=show_xgrid,showgrid=show_xgrid,gridcolor="rgba(255,255,255,0.06)",zeroline=False,title="Coin Rank" if show_xgrid else "",dtick=x_dtick,range=[0, x_max_val + 10]),
             yaxis=dict(title=f"RSI ({htf})",range=[15,90],gridcolor="rgba(255,255,255,0.05)"),
             showlegend=False,margin=dict(l=50,r=20,t=60,b=30))
         st.plotly_chart(fig,use_container_width=True)
@@ -500,47 +682,122 @@ with tab_mc:
     render_rows_with_chart(ddf, "mc", 80)
 
 # ============================================================
-# TAB 4: CONFLUENCE
+# TAB 4: CONFLUENCE — with filter checkboxes + dynamic scoring
 # ============================================================
 with tab_conf:
     st.markdown("### 🎯 Confluence Scanner")
+
+    # --- FILTER CHECKBOXES ---
+    with st.expander("⚙️ Confluence Filter konfigurieren", expanded=True):
+        st.markdown('<span style="font-size:12px;color:#888;">Aktiviere/deaktiviere Faktoren für die Score-Berechnung. Der Score wird auf -100...+100 normalisiert.</span>', unsafe_allow_html=True)
+        # Fear & Greed status
+        if fear_greed_val is not None:
+            fg_col = "#00FF7F" if fear_greed_val <= 30 else ("#FF6347" if fear_greed_val >= 70 else "#FFD700")
+            st.markdown(f'<span style="font-size:11px;color:#888;">📡 Fear & Greed Index: </span><span style="color:{fg_col};font-weight:bold;">{fear_greed_val}</span>', unsafe_allow_html=True)
+
+        cols = st.columns(3)
+        filter_keys = list(CONFLUENCE_FILTERS.keys())
+        for i, key in enumerate(filter_keys):
+            meta = CONFLUENCE_FILTERS[key]
+            with cols[i % 3]:
+                new_val = st.checkbox(
+                    f"{meta['label']} ({meta['weight']})",
+                    value=st.session_state["conf_filters"].get(key, meta["default"]),
+                    help=meta["desc"],
+                    key=f"cf_{key}")
+                st.session_state["conf_filters"][key] = new_val
+
+        active_count = sum(1 for v in st.session_state["conf_filters"].values() if v)
+        st.markdown(f'<span style="font-size:11px;color:#888;">✅ **{active_count}** von {len(CONFLUENCE_FILTERS)} Filtern aktiv</span>', unsafe_allow_html=True)
+
     with st.expander("ℹ️ Was ist der Confluence Scanner und wie nutze ich ihn?"):
-        st.markdown("""**Der Confluence Scanner** bewertet jeden Coin anhand **mehrerer unabhängiger Indikatoren gleichzeitig** und berechnet daraus einen Gesamt-Score von -100 bis +100.
+        st.markdown("""**Der Confluence Scanner** bewertet jeden Coin anhand **mehrerer unabhängiger Indikatoren gleichzeitig** und berechnet daraus einen normalisierten Score von -100 bis +100.
 
 **Wie wird der Score berechnet?**
-- **RSI 4h** (max ±30 Punkte): Der wichtigste Faktor. RSI < 30 = maximale Kaufpunkte, RSI > 80 = maximale Verkaufspunkte
-- **RSI 1D** (max ±20 Punkte): Bestätigung vom Tages-Trend
-- **MACD** (max ±20 Punkte): Momentum-Richtung und Histogramm-Stärke
-- **Volume & OBV** (max ±15 Punkte): Hohes Volumen + passende OBV-Richtung = starke Bestätigung
-- **Smart Money** (max ±15 Punkte, wenn aktiviert): Order Blocks und Market Structure
+Jeder aktive Filter trägt seinen Anteil bei. Der Score wird auf den Maximalwert der aktiven Filter normalisiert, damit er immer vergleichbar bleibt — egal wie viele Filter aktiv sind.
+
+**Die 5 Standard-Filter (vorausgewählt):**
+- **RSI 4h** (±30): Der wichtigste Faktor — Basis der gesamten App
+- **RSI 1D** (±20): Bestätigung vom Tages-Trend
+- **MACD** (±20): Momentum-Richtung und Histogramm-Stärke
+- **Volume & OBV** (±15): Hohes Volumen + passende OBV-Richtung
+- **Stoch RSI** (±12): Feintuning mit K/D Crossover
+
+**Zusätzliche Filter (optional):**
+- **Smart Money** (±15): Order Blocks + Market Structure (BOS/CHoCH)
+- **EMA Alignment** (±12): Preis vs EMA 9/21/50 Ausrichtung
+- **RSI Divergenz** (±15): Preis-RSI Divergenzen als Frühwarnsystem
+- **Bollinger Bands** (±10): Squeeze-Erkennung + Band-Position
+- **Funding Rate** (±10): Futures Funding Rate als konträrer Indikator
+- **Fear & Greed** (±8): Markt-Sentiment (konträr — Angst = Buy, Gier = Sell)
 
 **Score-Interpretation:**
 | Score | Empfehlung | Bedeutung |
 |---|---|---|
-| ≥ 60 | 🟢 **STRONG BUY** | Sehr starke Übereinstimmung — fast alle Indikatoren sind bullish |
-| 30-59 | 🟢 BUY | Mehrheit bullish — guter Einstiegszeitpunkt möglich |
-| 10-29 | 🟡 LEAN BUY | Leicht bullish — auf Bestätigung warten |
-| -9 bis 9 | ⚪ WAIT | Keine klare Richtung — nicht handeln |
-| -29 bis -10 | 🟡 LEAN SELL | Leicht bearish — vorsichtig sein |
-| -59 bis -30 | 🔴 SELL | Mehrheit bearish — Positionen absichern |
-| ≤ -60 | 🔴 **STRONG SELL** | Sehr starke Übereinstimmung bearish — Exit empfohlen |
+| ≥ 60 | 🟢 **STRONG BUY** | Fast alle aktiven Indikatoren bullish |
+| 30-59 | 🟢 BUY | Mehrheit bullish |
+| 10-29 | 🟡 LEAN BUY | Leicht bullish |
+| -9 bis 9 | ⚪ WAIT | Keine klare Richtung |
+| -29 bis -10 | 🟡 LEAN SELL | Leicht bearish |
+| -59 bis -30 | 🔴 SELL | Mehrheit bearish |
+| ≤ -60 | 🔴 **STRONG SELL** | Fast alle aktiven Indikatoren bearish |
 
-**Wichtig:** Ein hoher Confluence-Score bedeutet, dass **mehrere unabhängige Signale** in die gleiche Richtung zeigen. Das ist wesentlich zuverlässiger als ein einzelner Indikator.
+💡 **Der Score-Badge** (z.B. ⚡42) erscheint auch in den Tabs *24h Alerts* und *By Market Cap* und passt sich automatisch an deine Filter-Auswahl an.""")
 
-**So nutzt du den Scanner:**
-1. Schau dir die Top 5 Buy/Sell Coins an
-2. Geh zum Detail-Tab für den ausgewählten Coin
-3. Überprüfe dort Key Levels, S/R und Fibonacci für Entry/Exit
-4. Setze SL/TP basierend auf den Empfehlungen im Risk Management""")
+    # --- COMPUTE DYNAMIC SCORES ---
+    active_filters = st.session_state.get("conf_filters", {k: v["default"] for k, v in CONFLUENCE_FILTERS.items()})
+    scored_rows = []
+    for _, row in df.iterrows():
+        cf = get_dynamic_score(row, active_filters)
+        scored_rows.append({**row.to_dict(), "dyn_score": cf["score"], "dyn_rec": cf["recommendation"],
+                           "dyn_reasons": " | ".join(cf["reasons"][:4])})
+    sdf = pd.DataFrame(scored_rows)
+
+    # --- TOP BUY ---
     st.markdown("#### 🟢 Top Buy")
-    for _,r in df[df["score"]>0].sort_values("score",ascending=False).head(15).iterrows():
-        s=r["score"]
-        st.markdown(f'<div style="background:#1a1a2e;border-radius:8px;padding:10px 14px;margin:4px 0;"><div style="display:flex;justify-content:space-between;"><b style="color:white;">{r["symbol"]}</b><span style="color:#00FF7F;font-weight:bold;">{r.get("confluence_rec","WAIT")} ({s})</span></div><div style="background:#2a2a4a;border-radius:4px;height:6px;margin-top:6px;"><div style="background:linear-gradient(90deg,#00FF7F,#32CD32);height:6px;width:{min(abs(s),100)}%;border-radius:4px;"></div></div><div style="font-size:11px;color:#888;margin-top:4px;">RSI 4h: {r.get("rsi_4h",50):.1f} | MACD: {r.get("macd_trend","—")} | Vol: {r.get("vol_trend","—")}</div></div>', unsafe_allow_html=True)
+    buy_df = sdf[sdf["dyn_score"] > 0].sort_values("dyn_score", ascending=False).head(15)
+    if buy_df.empty:
+        st.info("Keine Buy-Signale mit den aktuellen Filtern.")
+    else:
+        for _, r in buy_df.iterrows():
+            s = r["dyn_score"]
+            rec = r["dyn_rec"]
+            reasons_txt = r.get("dyn_reasons", "")
+            glow = "text-shadow:0 0 6px #00FF7F;" if s >= 60 else ""
+            st.markdown(f'''<div style="background:#1a1a2e;border-radius:8px;padding:10px 14px;margin:4px 0;">
+<div style="display:flex;justify-content:space-between;align-items:center;">
+<b style="color:white;">{r["symbol"]}</b>
+<span style="color:#00FF7F;font-weight:bold;{glow}">{rec} ({s})</span>
+</div>
+<div style="background:#2a2a4a;border-radius:4px;height:6px;margin-top:6px;">
+<div style="background:linear-gradient(90deg,#00FF7F,#32CD32);height:6px;width:{min(abs(s),100)}%;border-radius:4px;"></div>
+</div>
+<div style="font-size:11px;color:#888;margin-top:4px;">{reasons_txt}</div>
+</div>''', unsafe_allow_html=True)
+
     st.markdown("---")
+
+    # --- TOP SELL ---
     st.markdown("#### 🔴 Top Sell")
-    for _,r in df[df["score"]<0].sort_values("score").head(15).iterrows():
-        s=abs(r["score"])
-        st.markdown(f'<div style="background:#1a1a2e;border-radius:8px;padding:10px 14px;margin:4px 0;"><div style="display:flex;justify-content:space-between;"><b style="color:white;">{r["symbol"]}</b><span style="color:#FF6347;font-weight:bold;">{r.get("confluence_rec","WAIT")} ({r["score"]})</span></div><div style="background:#2a2a4a;border-radius:4px;height:6px;margin-top:6px;"><div style="background:linear-gradient(90deg,#FF6347,#FF0000);height:6px;width:{min(s,100)}%;border-radius:4px;"></div></div><div style="font-size:11px;color:#888;margin-top:4px;">RSI 4h: {r.get("rsi_4h",50):.1f} | MACD: {r.get("macd_trend","—")} | Vol: {r.get("vol_trend","—")}</div></div>', unsafe_allow_html=True)
+    sell_df = sdf[sdf["dyn_score"] < 0].sort_values("dyn_score").head(15)
+    if sell_df.empty:
+        st.info("Keine Sell-Signale mit den aktuellen Filtern.")
+    else:
+        for _, r in sell_df.iterrows():
+            s = abs(r["dyn_score"])
+            rec = r["dyn_rec"]
+            reasons_txt = r.get("dyn_reasons", "")
+            glow = "text-shadow:0 0 6px #FF6347;" if s >= 60 else ""
+            st.markdown(f'''<div style="background:#1a1a2e;border-radius:8px;padding:10px 14px;margin:4px 0;">
+<div style="display:flex;justify-content:space-between;align-items:center;">
+<b style="color:white;">{r["symbol"]}</b>
+<span style="color:#FF6347;font-weight:bold;{glow}">{rec} ({r["dyn_score"]})</span>
+</div>
+<div style="background:#2a2a4a;border-radius:4px;height:6px;margin-top:6px;">
+<div style="background:linear-gradient(90deg,#FF6347,#FF0000);height:6px;width:{min(s,100)}%;border-radius:4px;"></div>
+</div>
+<div style="font-size:11px;color:#888;margin-top:4px;">{reasons_txt}</div>
+</div>''', unsafe_allow_html=True)
 
 # ============================================================
 # TAB 5: DETAIL — Complete Analysis Dashboard
