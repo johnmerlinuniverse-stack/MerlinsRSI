@@ -70,7 +70,7 @@ CRYPTOWAVES_COINS = [
     "PYTH", "SUN", "TIA", "CFX", "ENS", "WIF", "COMP", "DEXE",
     "LUNC", "STRK", "PENDLE", "ETHFI", "CHZ", "XTZ", "BAT",
     "ZRO", "CAKE", "TRUMP", "GNO", "CVX", "RLUSD", "FDUSD",
-    "ZK", "GLM", "KITE", "AWE", "SKY", "RAY", "SYRUP", "BARD",
+    "ZK", "GLM", "KITE", "AWE", "SKY", "RAY", "SYRUP", "BARD", "SENT",
     "DCR", "JST", "ONT", "FF", "KAIA", "NEO", "TWT",
     # Stablecoins (for reference)
     "USDC", "USDE",
@@ -146,6 +146,7 @@ COINGECKO_ID_MAP = {
     "RLUSD": "ripple-usd", "FDUSD": "first-digital-usd", "DCR": "decred",
     "JST": "just", "ONT": "ontology", "FF": "forefront", "KAIA": "kaia",
     "NEO": "neo", "TWT": "trust-wallet-token",
+    "SENT": "sentient",
 }
 
 # ============================================================
