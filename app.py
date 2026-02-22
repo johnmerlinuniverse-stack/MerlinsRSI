@@ -27,25 +27,63 @@ from indicators import (
 from alerts import check_and_send_alerts
 
 # ============================================================
-# SIGNAL ENGINE — matched to CryptoWaves.app behavior
+# SIGNAL ENGINE — Multi-TF RSI Signal
 # ============================================================
-# CWApp uses persistent state. We approximate with thresholds:
-#   RSI_4h >= 58 → SELL zone    RSI_4h <= 42 → BUY zone
-#   Cross events for CTB/CTS    Otherwise WAIT
+# Core logic from CryptoWaves.app (4h-based).
+# Extended: user can toggle 1h, 1D, 1W to influence the signal.
+# 4H is ALWAYS ON as the primary timeframe.
 
-def compute_signal(rsi_4h, rsi_4h_prev, rsi_1d):
-    # CTB: RSI_4H just crossed UP through 40
+# TF weights for multi-TF scoring
+SIG_TF_WEIGHTS = {"1h": 1.0, "4h": 3.0, "1D": 2.0, "1W": 1.5}
+
+def compute_signal_base(rsi_4h, rsi_4h_prev, rsi_1d):
+    """Original CryptoWaves-compatible 4h signal (always computed)."""
     if rsi_4h_prev < 40 and rsi_4h >= 40 and rsi_1d >= 35:
         return "CTB"
-    # CTS: RSI_4H just crossed DOWN through 60
     if rsi_4h_prev > 60 and rsi_4h <= 60 and rsi_1d <= 65:
         return "CTS"
-    # BUY zone: RSI_4h in oversold territory
     if rsi_4h <= 42:
         return "BUY"
-    # SELL zone: RSI_4h in overbought territory
     if rsi_4h >= 58:
         return "SELL"
+    return "WAIT"
+
+def compute_signal_multi_tf(row, active_sig_tfs):
+    """
+    Compute signal using multiple timeframes.
+    Each TF votes BUY/SELL with its weight.
+    If only 4H is active → identical to CryptoWaves logic.
+    """
+    # If only 4h selected → original CryptoWaves logic
+    if active_sig_tfs == {"4h"}:
+        return compute_signal_base(
+            row.get("rsi_4h", 50), row.get("rsi_prev_4h", 50), row.get("rsi_1D", 50))
+
+    bull = 0.0; bear = 0.0
+    for tf in active_sig_tfs:
+        rsi = row.get(f"rsi_{tf}", 50)
+        w = SIG_TF_WEIGHTS.get(tf, 1.0)
+        if rsi == 50.0:  # Skip fallback values (no data)
+            continue
+        if rsi <= 25: bull += w * 2.0    # strongly oversold
+        elif rsi <= 42: bull += w * 1.0  # oversold
+        elif rsi >= 75: bear += w * 2.0  # strongly overbought
+        elif rsi >= 58: bear += w * 1.0  # overbought
+
+    # CTB/CTS cross detection (only from 4h)
+    if "4h" in active_sig_tfs:
+        rsi_4h = row.get("rsi_4h", 50)
+        rsi_4h_prev = row.get("rsi_prev_4h", 50)
+        rsi_1d = row.get("rsi_1D", 50)
+        if rsi_4h_prev < 40 and rsi_4h >= 40 and rsi_1d >= 35 and bull >= bear:
+            return "CTB"
+        if rsi_4h_prev > 60 and rsi_4h <= 60 and rsi_1d <= 65 and bear >= bull:
+            return "CTS"
+
+    # Net score determines signal
+    net = bull - bear
+    if net >= 2.0: return "BUY"
+    elif net <= -2.0: return "SELL"
     return "WAIT"
 
 def sig_color(s):
@@ -249,7 +287,7 @@ def scan_all(coins, tfs, smc=False):
                 else: r[f"rsi_{tf}"],r[f"rsi_prev_{tf}"]=50.0,50.0
                 r[f"closes_{tf}"]=json.dumps([round(c,6) for c in df_k["close"].tail(20).tolist()])
             else: r[f"rsi_{tf}"],r[f"rsi_prev_{tf}"]=50.0,50.0; r[f"closes_{tf}"]="[]"
-        r["signal"]=compute_signal(r.get("rsi_4h",50),r.get("rsi_prev_4h",50),r.get("rsi_1D",50))
+        r["signal"]=compute_signal_base(r.get("rsi_4h",50),r.get("rsi_prev_4h",50),r.get("rsi_1D",50))
         r["border_alpha"]=border_alpha(r.get("rsi_4h",50),r["signal"])
         ptf="4h" if "4h" in kld else (list(tfs)[0] if tfs else None)
         if ptf and ptf in kld:
@@ -276,7 +314,39 @@ df = scan_all(tuple(coins_to_scan), tuple(tf_to_scan), False)
 if df.empty: st.warning("⚠️ No data."); st.stop()
 
 # ============================================================
-# DIAGNOSTICS (detect kline failures from RSI=50.0 pattern)
+# SIGNAL TF TOGGLES (inline, above header)
+# ============================================================
+if "sig_tfs" not in st.session_state:
+    st.session_state["sig_tfs"] = {"4h": True, "1h": False, "1D": False, "1W": False}
+
+stc1, stc2, stc3, stc4, stc5 = st.columns([1.5, 1, 1, 1, 1])
+with stc1:
+    st.markdown('<span style="color:#FFD700;font-weight:bold;font-size:13px;">📡 Signal-TFs:</span>', unsafe_allow_html=True)
+with stc2:
+    v = st.checkbox("4H ★", value=True, disabled=True, key="stf_4h",
+                    help="4H ist immer aktiv (Kernstück der CryptoWaves-Logik)")
+    st.session_state["sig_tfs"]["4h"] = True  # always on
+with stc3:
+    v = st.checkbox("1H", value=st.session_state["sig_tfs"].get("1h", False), key="stf_1h",
+                    help="1H RSI zum Signal hinzufügen")
+    st.session_state["sig_tfs"]["1h"] = v
+with stc4:
+    v = st.checkbox("1D", value=st.session_state["sig_tfs"].get("1D", False), key="stf_1d",
+                    help="1D RSI zum Signal hinzufügen")
+    st.session_state["sig_tfs"]["1D"] = v
+with stc5:
+    v = st.checkbox("1W", value=st.session_state["sig_tfs"].get("1W", False), key="stf_1w",
+                    help="1W RSI zum Signal hinzufügen")
+    st.session_state["sig_tfs"]["1W"] = v
+
+active_sig_tfs = {tf for tf, on in st.session_state["sig_tfs"].items() if on}
+
+# Re-compute signal with multi-TF (does NOT re-run scan_all)
+df["signal"] = df.apply(lambda row: compute_signal_multi_tf(row, active_sig_tfs), axis=1)
+df["border_alpha"] = df.apply(lambda row: border_alpha(row.get("rsi_4h", 50), row["signal"]), axis=1)
+
+# ============================================================
+# DIAGNOSTICS (detect kline failures + image issues)
 # ============================================================
 if "rsi_4h" in df.columns:
     rsi_ok = len(df[df["rsi_4h"] != 50.0])
@@ -290,14 +360,24 @@ if "rsi_4h" in df.columns:
         st.markdown(f"**Exchange:** {ex_info['active_exchange'].upper()} ({'✅ verbunden' if ex_info['connected'] else '❌ nicht verbunden'})")
         st.markdown(f"**Klines OK:** {rsi_ok} / {total} ({rsi_ok/total*100:.0f}%)")
         st.markdown(f"**Klines fehlend:** {rsi_fail} / {total}")
+        st.markdown(f"**Signal-TFs aktiv:** {', '.join(sorted(active_sig_tfs))}")
         if rsi_fail > 0:
             fail_coins = df[df["rsi_4h"] == 50.0]["symbol"].tolist()[:20]
             st.markdown(f"**Betroffene Coins (max 20):** {', '.join(fail_coins)}")
-            st.markdown("**Mögliche Ursachen:**")
-            st.markdown("- Exchange Rate-Limiting (zu viele parallele Requests)")
-            st.markdown("- Coin nicht auf der Exchange gelistet (z.B. USD1, WLFI)")
-            st.markdown("- Temporärer Netzwerkfehler")
-            st.caption("💡 Tipp: Reduziere die Anzahl der Coins in der Sidebar oder warte 5 Min. und klicke Refresh.")
+        # Image diagnostic
+        if "coin_image" in df.columns:
+            img_ok = len(df[df["coin_image"].astype(str).str.startswith("http")])
+            img_fail = total - img_ok
+            st.markdown(f"**Logos:** {img_ok}/{total} mit Bild-URL")
+            if img_fail > total * 0.5:
+                st.markdown("⚠️ Viele Coins ohne Logo — CoinGecko-Daten möglicherweise nicht geladen.")
+            if img_ok > 0:
+                sample = df[df["coin_image"].astype(str).str.startswith("http")].iloc[0]
+                st.markdown(f"**Beispiel-URL:** `{sample['coin_image'][:80]}...`")
+                st.markdown(f'Test: <img src="{sample["coin_image"]}" width="24" height="24" style="border-radius:50%;vertical-align:middle;"> ← Bild sichtbar?', unsafe_allow_html=True)
+            if img_fail > 0:
+                no_img = df[~df["coin_image"].astype(str).str.startswith("http")]["symbol"].tolist()[:10]
+                st.markdown(f"**Coins ohne Logo:** {', '.join(no_img)}")
 
 # ============================================================
 # HELPERS
@@ -343,14 +423,23 @@ def crow_html(row, charts=True):
     # Strong glow effect on signal label
     glow = f'text-shadow:0 0 8px {sc},0 0 16px {sc};' if is_strong_sell or is_strong_buy else ""
     r1h=row.get("rsi_1h",50); r4=row.get("rsi_4h",50); r1d=row.get("rsi_1D",50); r1w=row.get("rsi_1W",50)
+    # Confluence score — separate line
+    conf_sc = row.get("score", 0)
+    conf_rec = row.get("confluence_rec", "WAIT")
+    if conf_sc >= 30: conf_html = f'<span style="color:#00FF7F;font-size:10px;">⚡ {conf_rec} ({conf_sc})</span>'
+    elif conf_sc >= 10: conf_html = f'<span style="color:#88FFAA;font-size:10px;">↑ {conf_rec} ({conf_sc})</span>'
+    elif conf_sc <= -30: conf_html = f'<span style="color:#FF6347;font-size:10px;">⚡ {conf_rec} ({conf_sc})</span>'
+    elif conf_sc <= -10: conf_html = f'<span style="color:#FF8888;font-size:10px;">↓ {conf_rec} ({conf_sc})</span>'
+    else: conf_html = f'<span style="color:#666;font-size:10px;">{conf_rec} ({conf_sc})</span>'
     return f'''<div class="crow" style="{bdr}">
 <div class="ic">{icon(im)}</div>
 <div class="inf"><div><span class="cn">{sym}</span><span class="cf">{nm}</span><span class="cr">{rks}</span></div>
 <div class="pl">Price: <b style="color:white;">{fp(row["price"])}</b></div>
 <div class="chs">Ch%: <span class="{cc(c1h)}">{c1h:+.2f}%</span> <span class="{cc(c24)}">{c24:+.2f}%</span> <span class="{cc(c7)}" style="font-weight:bold;">{c7:+.2f}%</span> <span class="{cc(c30)}">{c30:+.2f}%</span></div></div>
 {ch}
-<div class="sig"><span style="font-size:11px;color:#888;">Now:</span> <span class="sl" style="color:{sc};{glow}">{sig}</span>{score_badge_html(row)}
+<div class="sig"><span style="font-size:11px;color:#888;">RSI:</span> <span class="sl" style="color:{sc};{glow}">{sig}</span>
 <div class="rsi-row"><span class="rsi-pill">1h: <b style="color:{rsc(r1h)};">{r1h:.1f}</b></span><span class="rsi-pill" style="background:#252550;"><b style="color:{rsc(r4)};">{r4:.1f}</b> 4h</span><span class="rsi-pill" style="background:#252550;"><b style="color:{rsc(r1d)};">{r1d:.1f}</b> 1D</span><span class="rsi-pill">1W: <b style="color:{rsc(r1w)};">{r1w:.1f}</b></span></div>
+<div style="margin-top:2px;">Conf: {conf_html}</div>
 </div></div>'''
 
 def render_rows_with_chart(dataframe, tab_key, max_rows=60):
@@ -441,9 +530,10 @@ else: ml,bc="BEARISH","br"
 a1=df["change_1h"].mean() if "change_1h" in df.columns else 0
 a24=df["change_24h"].mean(); a7=df["change_7d"].mean() if "change_7d" in df.columns else 0; a30=df["change_30d"].mean() if "change_30d" in df.columns else 0
 ex=get_exchange_status(); exn=ex["active_exchange"].upper() if ex["connected"] else "CoinGecko"
+sig_tfs_str = "+".join(sorted(active_sig_tfs, key=lambda t: ["1h","4h","1D","1W"].index(t) if t in ["1h","4h","1D","1W"] else 99))
 st.markdown(f'''<div class="hbar"><div><span class="htitle">🧙‍♂️ Merlin Crypto Scanner</span> <span class="badge {bc}">Market: {ml}</span></div>
 <div class="hstat">Avg RSI (4h): <b>{avg4:.2f}</b> ({(avg4-50)/50*100:+.2f}%) | Ch%: <span class="{cc(a1)}">{a1:+.2f}%</span> <span class="{cc(a24)}">{a24:+.2f}%</span> <span class="{cc(a7)}">{a7:+.2f}%</span> <span class="{cc(a30)}">{a30:+.2f}%</span></div>
-<div class="hstat"><span style="color:#FF6347;">🔴 {sct}</span> <span style="color:#FFD700;">🟡 {wct}</span> <span style="color:#00FF7F;">🟢 {bct}</span> | 📡 {exn}</div></div>''', unsafe_allow_html=True)
+<div class="hstat"><span style="color:#FF6347;">🔴 {sct}</span> <span style="color:#FFD700;">🟡 {wct}</span> <span style="color:#00FF7F;">🟢 {bct}</span> | 📡 {exn} | Sig: {sig_tfs_str}</div></div>''', unsafe_allow_html=True)
 
 # ============================================================
 # TABS
@@ -493,15 +583,10 @@ with tab_hm:
         pdf=df[avail].copy().dropna(subset=[rc_col])
 
         if hx=="Coin Rank":
-            # Robust rank distribution: coins without CoinGecko rank get spread out
-            pdf = pdf.copy()
-            has_rank = pdf["rank"] < 999
-            max_real_rank = int(pdf.loc[has_rank, "rank"].max()) if has_rank.any() else 100
-            if (~has_rank).any():
-                n_missing = (~has_rank).sum()
-                fake_ranks = np.arange(max_real_rank + 5, max_real_rank + 5 + n_missing * 2, 2)
-                pdf.loc[~has_rank, "rank"] = fake_ranks[:n_missing]
-            pdf["x"] = pdf["rank"].astype(float)
+            # Sort by rank, then use sequential 1-based position
+            # This prevents gaps (e.g., coins ranked #5, #12, #23 → x=1, 2, 3)
+            pdf = pdf.sort_values("rank").copy()
+            pdf["x"] = range(1, len(pdf) + 1)
         else: np.random.seed(42); pdf["x"]=np.random.uniform(0,100,len(pdf))
 
         # 4-color dots + orange for search
@@ -549,11 +634,11 @@ with tab_hm:
         fig.add_hline(y=av,line_dash="dashdot",line_color="rgba(255,215,0,0.6)",line_width=1.5,annotation_text=f"AVG RSI: {av:.1f}",annotation_font_color="#FFD700")
         # Layout
         show_xgrid = hx=="Coin Rank"
-        x_max_val = pdf["x"].max() if not pdf.empty else 200
+        x_max_val = pdf["x"].max() if not pdf.empty else 100
         fig.update_layout(
             title=dict(text=f"Crypto Market RSI({htf}) Heatmap<br><sup>{datetime.now().strftime('%d/%m/%Y %H:%M')} UTC by Merlin Scanner</sup>",font=dict(size=16,color="white"),x=0.5),
             template="plotly_dark",paper_bgcolor="#0E1117",plot_bgcolor="#0E1117",height=700,
-            xaxis=dict(showticklabels=show_xgrid,showgrid=show_xgrid,gridcolor="rgba(255,255,255,0.06)",zeroline=False,title="Coin Rank" if show_xgrid else "",dtick=20,range=[0, x_max_val + 10]),
+            xaxis=dict(showticklabels=show_xgrid,showgrid=show_xgrid,gridcolor="rgba(255,255,255,0.06)",zeroline=False,title="Position (sortiert nach Rank)" if show_xgrid else "",dtick=10,range=[0, x_max_val + 3]),
             yaxis=dict(title=f"RSI ({htf})",range=[15,90],gridcolor="rgba(255,255,255,0.05)"),
             showlegend=False,margin=dict(l=50,r=20,t=60,b=30))
         st.plotly_chart(fig,use_container_width=True)
