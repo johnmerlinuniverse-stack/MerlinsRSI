@@ -455,13 +455,20 @@ def render_rows_with_chart(dataframe, tab_key, max_rows=60):
     for _,row in dataframe.head(max_rows).iterrows():
         sym=row["symbol"]
         st.markdown(crow_html(row), unsafe_allow_html=True)
-        # Inline chart button
-        if st.button(f"📈 {sym}", key=f"btn_{tab_key}_{sym}", use_container_width=False):
-            if st.session_state.get(chart_state_key)==sym:
-                st.session_state[chart_state_key]=None
-            else:
-                st.session_state[chart_state_key]=sym
-            st.rerun()
+        # Inline buttons: Chart + Detail
+        bc1, bc2, _ = st.columns([1, 1, 4])
+        with bc1:
+            if st.button(f"📈 {sym}", key=f"btn_{tab_key}_{sym}", use_container_width=True):
+                if st.session_state.get(chart_state_key)==sym:
+                    st.session_state[chart_state_key]=None
+                else:
+                    st.session_state[chart_state_key]=sym
+                st.rerun()
+        with bc2:
+            if st.button(f"🔍 Detail", key=f"det_{tab_key}_{sym}", use_container_width=True):
+                st.session_state["dc"] = sym
+                st.session_state["_go_detail"] = True
+                st.rerun()
         # Show chart if this coin is selected
         if st.session_state.get(chart_state_key)==sym:
             st.components.v1.html(tv_chart_simple(sym), height=600)
@@ -500,6 +507,20 @@ st.markdown(f'''<div class="hbar"><div><span class="htitle">🧙‍♂️ Merlin
 # ============================================================
 tab_alerts, tab_hm, tab_mc, tab_conf, tab_det = st.tabs([
     f"🚨 24h Alerts {sct}🔴 {bct}🟢", "🔥 RSI Heatmap", "📊 By Market Cap", "🎯 Confluence", "🔍 Detail"])
+
+# Auto-switch to Detail tab when requested
+if st.session_state.pop("_go_detail", False):
+    st.components.v1.html("""
+    <script>
+    const tabs = window.parent.document.querySelectorAll('[role="tab"]');
+    for (const tab of tabs) {
+        if (tab.textContent.includes('Detail')) {
+            tab.click();
+            break;
+        }
+    }
+    </script>
+    """, height=0)
 
 # ============================================================
 # TAB 1: 24h ALERTS — single-click chart, Strong filter
