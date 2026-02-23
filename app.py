@@ -219,6 +219,7 @@ def score_badge_html(row):
 @st.cache_data(ttl=300, show_spinner="🧙‍♂️ Scanning crypto market...")
 def scan_all(coins, tfs, smc=False):
     from concurrent.futures import ThreadPoolExecutor, as_completed
+    from ta.momentum import RSIIndicator
     core_tfs = ["1h", "4h", "1D", "1W"]
     all_tfs = list(dict.fromkeys(core_tfs + list(tfs)))
     ex = get_exchange_status(); connected = ex["connected"]
@@ -236,12 +237,11 @@ def scan_all(coins, tfs, smc=False):
     def _fetch_one(sym_tf):
         sym, tf = sym_tf
         try:
-            time.sleep(0.05)  # 50ms spacing to reduce rate-limit pressure
             return sym_tf, fetch_klines_smart(sym, TIMEFRAMES.get(tf, tf))
         except Exception:
             return sym_tf, pd.DataFrame()
 
-    workers = 3 if connected else 2  # Keep low to avoid rate-limiting
+    workers = 6 if connected else 3
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {pool.submit(_fetch_one, t): t for t in fetch_tasks}
         for fut in as_completed(futures):
@@ -280,7 +280,6 @@ def scan_all(coins, tfs, smc=False):
             df_k = klines_cache.get((sym, tf), pd.DataFrame())
             if not df_k.empty and len(df_k)>=15:
                 kld[tf]=df_k
-                from ta.momentum import RSIIndicator
                 rs = RSIIndicator(close=df_k["close"],window=14).rsi().dropna()
                 if len(rs)>=2:
                     r[f"rsi_{tf}"]=round(float(rs.iloc[-1]),2); r[f"rsi_prev_{tf}"]=round(float(rs.iloc[-2]),2)
@@ -457,37 +456,12 @@ def render_rows_with_chart(dataframe, tab_key, max_rows=60):
             st.rerun()
         # Show chart if this coin is selected
         if st.session_state.get(chart_state_key)==sym:
-            # Chart mode toggle
-            mode_key = f"cmode_{tab_key}_{sym}"
-            bc1, bc2, _ = st.columns([1,1,4])
-            with bc1:
-                if st.button("📊 Simple (RSI)", key=f"cs_{tab_key}_{sym}",
-                    use_container_width=True, type="primary" if st.session_state.get(mode_key,"simple")=="simple" else "secondary"):
-                    st.session_state[mode_key]="simple"; st.rerun()
-            with bc2:
-                if st.button("📈 Pro (RSI+Pivot)", key=f"cp_{tab_key}_{sym}",
-                    use_container_width=True, type="primary" if st.session_state.get(mode_key,"simple")=="pro" else "secondary"):
-                    st.session_state[mode_key]="pro"; st.rerun()
-            if st.session_state.get(mode_key,"simple")=="pro":
-                st.components.v1.html(tv_chart_pro(sym), height=630)
-            else:
-                st.components.v1.html(tv_chart_simple(sym), height=580)
+            st.components.v1.html(tv_chart_simple(sym), height=600)
 
-def tv_chart_simple(sym, h=560):
-    """Clean widgetembed chart with RSI only — fast, compact."""
+def tv_chart_simple(sym, h=580):
+    """TradingView chart with RSI + Pivot Points Standard (Fibonacci)."""
     pair=f"BINANCE:{sym}USDT"
-    return (f'<div style="height:{h}px;background:#131722;border-radius:0 0 8px 8px;overflow:hidden;">'
-            f'<iframe src="https://s.tradingview.com/widgetembed/?frameElementId=tv_{sym}'
-            f'&symbol={pair}&interval=240&hidesidetoolbar=0&symboledit=1&saveimage=0'
-            f'&toolbarbg=131722&theme=dark&style=1&timezone=Etc%2FUTC&withdateranges=1'
-            f'&allow_symbol_change=1'
-            f'&studies=RSI%40tv-basicstudies'
-            f'" style="width:100%;height:{h}px;border:none;"></iframe></div>')
-
-def tv_chart_pro(sym, h=610):
-    """Full TradingView widget with RSI + Pivot Points Standard (Fibonacci)."""
-    pair=f"BINANCE:{sym}USDT"
-    uid=f"tv_pro_{sym}_{h}"
+    uid=f"tv_{sym}_{h}"
     return f'''<div id="{uid}" style="height:{h}px;background:#131722;border-radius:0 0 8px 8px;overflow:hidden;"></div>
 <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
 <script type="text/javascript">
@@ -1036,27 +1010,21 @@ with tab_det:
         # TradingView Chart — nur bei Klick laden (verhindert Firewall-Blockade)
         # =============================================
         det_chart_key = "det_chart_open"
-        dc1, dc2, dc3, _ = st.columns([1,1,1,3])
+        dc1, dc2, _ = st.columns([1,1,4])
         with dc1:
-            if st.button("📊 Simple (RSI)", key="dc_simple", use_container_width=True,
-                type="primary" if st.session_state.get("det_cmode")=="simple" else "secondary"):
-                st.session_state["det_cmode"]="simple"; st.session_state[det_chart_key]=True; st.rerun()
+            if st.button("📈 Chart öffnen (RSI + Pivot)", key="dc_open", use_container_width=True,
+                type="primary" if st.session_state.get(det_chart_key) else "secondary"):
+                st.session_state[det_chart_key] = not st.session_state.get(det_chart_key, False)
+                st.rerun()
         with dc2:
-            if st.button("📈 Pro (RSI+Pivot)", key="dc_pro", use_container_width=True,
-                type="primary" if st.session_state.get("det_cmode")=="pro" else "secondary"):
-                st.session_state["det_cmode"]="pro"; st.session_state[det_chart_key]=True; st.rerun()
-        with dc3:
             if st.session_state.get(det_chart_key):
                 if st.button("❌ Chart schließen", key="dc_close", use_container_width=True):
-                    st.session_state[det_chart_key]=False; st.session_state["det_cmode"]=None; st.rerun()
+                    st.session_state[det_chart_key]=False; st.rerun()
 
-        if st.session_state.get(det_chart_key) and st.session_state.get("det_cmode"):
-            if st.session_state["det_cmode"]=="pro":
-                st.components.v1.html(tv_chart_pro(sel,670),height=690)
-            else:
-                st.components.v1.html(tv_chart_simple(sel,670),height=690)
-        elif not st.session_state.get(det_chart_key):
-            st.info("💡 Klicke **Simple** oder **Pro** um den TradingView-Chart zu laden.")
+        if st.session_state.get(det_chart_key):
+            st.components.v1.html(tv_chart_simple(sel, 670), height=690)
+        else:
+            st.info("💡 Klicke **Chart öffnen** um den TradingView-Chart mit RSI + Pivot Points (Fibonacci) zu laden.")
 
         # =============================================
         # Plotly Key Levels Chart (S/R + Fibonacci on candlesticks)
