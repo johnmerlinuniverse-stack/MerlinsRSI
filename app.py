@@ -182,18 +182,19 @@ CONFLUENCE_FILTERS = {
     "rsi_1d":         {"label": "📈 RSI 1D",           "default": True,  "weight": 20, "desc": "Bestätigung vom Tages-Trend"},
     "macd":           {"label": "📉 MACD",             "default": True,  "weight": 20, "desc": "Momentum-Richtung + Histogramm"},
     "volume_obv":     {"label": "🔊 Volume & OBV",     "default": True,  "weight": 15, "desc": "Volumen + OBV-Richtung"},
-    "stoch_rsi":      {"label": "🎛️ Stoch RSI",        "default": True,  "weight": 12, "desc": "Feintuning K/D Crossover"},
+    "rsi_divergence": {"label": "🔀 RSI Divergenz",    "default": True,  "weight": 15, "desc": "Preis-RSI Divergenzen (Regular + Hidden)"},
     "smart_money":    {"label": "🏦 Smart Money",      "default": False, "weight": 15, "desc": "Order Blocks + Market Structure (BOS/CHoCH)"},
-    "ema_alignment":  {"label": "📐 EMA Alignment",    "default": False, "weight": 12, "desc": "Preis vs EMA 9/21/50 Ausrichtung"},
-    "rsi_divergence": {"label": "🔀 RSI Divergenz",    "default": False, "weight": 15, "desc": "Preis-RSI Divergenzen (Regular + Hidden)"},
+    "ema_alignment":  {"label": "📐 EMA Alignment",    "default": True,  "weight": 12, "desc": "Preis vs EMA 9/21/50 Ausrichtung"},
+    "stoch_rsi":      {"label": "🎛️ Stoch RSI",        "default": True,  "weight": 12, "desc": "Feintuning K/D Crossover"},
     "bollinger":      {"label": "📏 Bollinger Bands",   "default": False, "weight": 10, "desc": "Squeeze-Erkennung + Band-Position"},
     "funding_rate":   {"label": "💰 Funding Rate",     "default": False, "weight": 10, "desc": "Futures Funding Rate (konträr)"},
     "fear_greed":     {"label": "😱 Fear & Greed",     "default": False, "weight": 8,  "desc": "Markt-Sentiment (konträr)"},
 }
 
-# Session state for confluence filters
-if "conf_filters" not in st.session_state:
-    st.session_state["conf_filters"] = {k: v["default"] for k, v in CONFLUENCE_FILTERS.items()}
+# Session state for confluence filters (reset if defaults changed)
+_default_conf = {k: v["default"] for k, v in CONFLUENCE_FILTERS.items()}
+if "conf_filters" not in st.session_state or set(st.session_state["conf_filters"].keys()) != set(_default_conf.keys()):
+    st.session_state["conf_filters"] = _default_conf
 
 # Max possible score from active filters
 FILTER_WEIGHTS = {k: v["weight"] for k, v in CONFLUENCE_FILTERS.items()}
@@ -455,10 +456,10 @@ def render_rows_with_chart(dataframe, tab_key, max_rows=60):
     for _,row in dataframe.head(max_rows).iterrows():
         sym=row["symbol"]
         st.markdown(crow_html(row), unsafe_allow_html=True)
-        # Inline buttons: Chart + Detail
-        bc1, bc2, _ = st.columns([1, 1, 4])
+        # Inline buttons: Chart + Detail (compact, equal width)
+        bc1, bc2, _ = st.columns([1, 1, 10])
         with bc1:
-            if st.button(f"📈 {sym}", key=f"btn_{tab_key}_{sym}", use_container_width=True):
+            if st.button(f"📈 Chart", key=f"btn_{tab_key}_{sym}", use_container_width=True):
                 if st.session_state.get(chart_state_key)==sym:
                     st.session_state[chart_state_key]=None
                 else:
@@ -909,18 +910,21 @@ with tab_det:
         pr_data = calculate_price_range(detail_df) if not detail_df.empty else {}
         sltp = calculate_sl_tp(price, atr_data.get("atr",0), sig, sr_data)
 
-        # Multi-TF RSI
-        rsi_vals = {}
+        # Multi-TF RSI — always in ascending order: 1h, 4h, 1D, 1W
+        rsi_vals_raw = {}
         for tf in tf_to_scan:
-            rsi_vals[tf] = c.get(f"rsi_{tf}", None)
+            rsi_vals_raw[tf] = c.get(f"rsi_{tf}", None)
         for extra_tf, extra_int in [("1h","1h"),("1W","1w")]:
-            if extra_tf not in rsi_vals:
+            if extra_tf not in rsi_vals_raw:
                 edf = fetch_klines_smart(sel, extra_int)
                 if not edf.empty and len(edf) >= 15:
                     from ta.momentum import RSIIndicator as _RSI
                     rs = _RSI(close=edf["close"],window=14).rsi().dropna()
-                    rsi_vals[extra_tf] = round(float(rs.iloc[-1]),2) if len(rs)>=1 else None
-                else: rsi_vals[extra_tf] = None
+                    rsi_vals_raw[extra_tf] = round(float(rs.iloc[-1]),2) if len(rs)>=1 else None
+                else: rsi_vals_raw[extra_tf] = None
+        # Force correct order
+        tf_order = ["1h", "4h", "1D", "1W"]
+        rsi_vals = {tf: rsi_vals_raw.get(tf) for tf in tf_order if tf in rsi_vals_raw}
         mtf = multi_tf_rsi_summary(rsi_vals)
 
         # =============================================
