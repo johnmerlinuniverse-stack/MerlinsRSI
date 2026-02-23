@@ -290,7 +290,8 @@ def fetch_all_market_data() -> pd.DataFrame:
         data = get_coingecko_market_data(page=page)
         if data:
             all_data.extend(data)
-        time.sleep(1.5)
+        if page < 2:
+            time.sleep(0.3)
 
     if not all_data:
         return pd.DataFrame()
