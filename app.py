@@ -391,7 +391,15 @@ def rsc(v):
     if v>70: return "#FF6347"
     elif v<30: return "#00FF7F"
     return "white"
-def icon(url): return f'<img src="{url}" width="34" height="34" style="border-radius:50%;">' if url else '<div style="width:34px;height:34px;border-radius:50%;background:#2a2a4a;"></div>'
+def icon(url, sym=""):
+    """Coin icon with fallback sources."""
+    if url and url.startswith("http"):
+        return f'<img src="{url}" width="34" height="34" style="border-radius:50%;" onerror="this.onerror=null;this.src=\'https://raw.githubusercontent.com/spothq/cryptocurrency-icons/master/128/color/{sym.lower()}.png\';this.onerror=function(){{this.style.display=\'none\';this.parentElement.innerHTML=\'<div style=&quot;width:34px;height:34px;border-radius:50%;background:#2a2a4a;display:flex;align-items:center;justify-content:center;color:#888;font-size:12px;font-weight:bold;&quot;>{sym[:2]}</div>\';}}">'
+    elif sym:
+        # No CoinGecko URL — try GitHub icons first
+        gh_url = f"https://raw.githubusercontent.com/spothq/cryptocurrency-icons/master/128/color/{sym.lower()}.png"
+        return f'<img src="{gh_url}" width="34" height="34" style="border-radius:50%;" onerror="this.onerror=null;this.style.display=\'none\';this.parentElement.innerHTML=\'<div style=&quot;width:34px;height:34px;border-radius:50%;background:#2a2a4a;display:flex;align-items:center;justify-content:center;color:#888;font-size:12px;font-weight:bold;&quot;>{sym[:2]}</div>\';">'
+    return f'<div style="width:34px;height:34px;border-radius:50%;background:#2a2a4a;display:flex;align-items:center;justify-content:center;color:#888;font-size:12px;font-weight:bold;">{sym[:2]}</div>'
 
 def crow_html(row, charts=True):
     sig=row.get("signal","WAIT"); ba=row.get("border_alpha",0)
@@ -431,7 +439,7 @@ def crow_html(row, charts=True):
     elif conf_sc <= -10: conf_html = f'<span style="color:#FF8888;font-size:10px;">↓ {conf_rec} ({conf_sc})</span>'
     else: conf_html = f'<span style="color:#666;font-size:10px;">{conf_rec} ({conf_sc})</span>'
     return f'''<div class="crow" style="{bdr}">
-<div class="ic">{icon(im)}</div>
+<div class="ic">{icon(im, sym)}</div>
 <div class="inf"><div><span class="cn">{sym}</span><span class="cf">{nm}</span><span class="cr">{rks}</span></div>
 <div class="pl">Price: <b style="color:white;">{fp(row["price"])}</b></div>
 <div class="chs">Ch%: <span class="{cc(c1h)}">{c1h:+.2f}%</span> <span class="{cc(c24)}">{c24:+.2f}%</span> <span class="{cc(c7)}" style="font-weight:bold;">{c7:+.2f}%</span> <span class="{cc(c30)}">{c30:+.2f}%</span></div></div>
@@ -459,37 +467,15 @@ def render_rows_with_chart(dataframe, tab_key, max_rows=60):
             st.components.v1.html(tv_chart_simple(sym), height=600)
 
 def tv_chart_simple(sym, h=580):
-    """TradingView chart with RSI + Pivot Points Standard (Fibonacci)."""
+    """Clean widgetembed chart with RSI only — fast, compact."""
     pair=f"BINANCE:{sym}USDT"
-    uid=f"tv_{sym}_{h}"
-    return f'''<div id="{uid}" style="height:{h}px;background:#131722;border-radius:0 0 8px 8px;overflow:hidden;"></div>
-<script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
-<script type="text/javascript">
-new TradingView.widget({{
-  "container_id": "{uid}",
-  "width": "100%",
-  "height": {h},
-  "symbol": "{pair}",
-  "interval": "240",
-  "timezone": "Etc/UTC",
-  "theme": "dark",
-  "style": "1",
-  "locale": "de_DE",
-  "toolbar_bg": "#131722",
-  "enable_publishing": false,
-  "hide_side_toolbar": false,
-  "allow_symbol_change": true,
-  "withdateranges": true,
-  "save_image": false,
-  "studies": [
-    "RSI@tv-basicstudies",
-    "PivotPointsStandard@tv-basicstudies"
-  ],
-  "studies_overrides": {{
-    "Pivot Points Standard.kind": "Fibonacci"
-  }}
-}});
-</script>'''
+    return (f'<div style="height:{h}px;background:#131722;border-radius:0 0 8px 8px;overflow:hidden;">'
+            f'<iframe src="https://s.tradingview.com/widgetembed/?frameElementId=tv_{sym}'
+            f'&symbol={pair}&interval=240&hidesidetoolbar=0&symboledit=1&saveimage=0'
+            f'&toolbarbg=131722&theme=dark&style=1&timezone=Etc%2FUTC&withdateranges=1'
+            f'&allow_symbol_change=1'
+            f'&studies=RSI%40tv-basicstudies'
+            f'" style="width:100%;height:{h}px;border:none;"></iframe></div>')
 
 # ============================================================
 # HEADER
@@ -882,7 +868,7 @@ with tab_det:
         price=c["price"]; r4=c.get("rsi_4h",50); r1d=c.get("rsi_1D",50)
 
         # Header
-        st.markdown(f'<div style="background:#1a1a2e;border-radius:10px;padding:16px;margin-bottom:12px;"><div style="display:flex;flex-wrap:wrap;align-items:center;gap:14px;">{icon(im)}<h2 style="margin:0;color:white;">{sel}</h2><span style="color:#888;">{c.get("coin_name",sel)}</span><span class="cr">#{int(c.get("rank",999))}</span><span style="font-size:20px;color:white;font-weight:bold;">{fp(price)}</span><span class="{cc(c.get("change_24h",0))}" style="font-size:16px;">{c.get("change_24h",0):+.2f}%</span><span style="color:{sc};font-weight:bold;font-size:16px;">Now: {sig}</span></div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div style="background:#1a1a2e;border-radius:10px;padding:16px;margin-bottom:12px;"><div style="display:flex;flex-wrap:wrap;align-items:center;gap:14px;">{icon(im, sel)}<h2 style="margin:0;color:white;">{sel}</h2><span style="color:#888;">{c.get("coin_name",sel)}</span><span class="cr">#{int(c.get("rank",999))}</span><span style="font-size:20px;color:white;font-weight:bold;">{fp(price)}</span><span class="{cc(c.get("change_24h",0))}" style="font-size:16px;">{c.get("change_24h",0):+.2f}%</span><span style="color:{sc};font-weight:bold;font-size:16px;">Now: {sig}</span></div></div>', unsafe_allow_html=True)
 
         # ---- COMPUTE ON-DEMAND INDICATORS ----
         from indicators import (calculate_ema_crosses, calculate_bollinger, calculate_atr,
@@ -1012,7 +998,7 @@ with tab_det:
         det_chart_key = "det_chart_open"
         dc1, dc2, _ = st.columns([1,1,4])
         with dc1:
-            if st.button("📈 Chart öffnen (RSI + Pivot)", key="dc_open", use_container_width=True,
+            if st.button("📈 Chart öffnen (RSI)", key="dc_open", use_container_width=True,
                 type="primary" if st.session_state.get(det_chart_key) else "secondary"):
                 st.session_state[det_chart_key] = not st.session_state.get(det_chart_key, False)
                 st.rerun()
@@ -1024,7 +1010,7 @@ with tab_det:
         if st.session_state.get(det_chart_key):
             st.components.v1.html(tv_chart_simple(sel, 670), height=690)
         else:
-            st.info("💡 Klicke **Chart öffnen** um den TradingView-Chart mit RSI + Pivot Points (Fibonacci) zu laden.")
+            st.info("💡 Klicke **Chart öffnen** um den TradingView-Chart mit RSI zu laden.")
 
         # =============================================
         # Plotly Key Levels Chart (S/R + Fibonacci on candlesticks)
