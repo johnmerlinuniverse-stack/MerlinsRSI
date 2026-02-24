@@ -57,11 +57,12 @@ def calculate_stoch_rsi(df: pd.DataFrame, period: int = RSI_PERIOD) -> dict:
 
 def calculate_macd(df: pd.DataFrame) -> dict:
     if df.empty or len(df) < MACD_SLOW + MACD_SIGNAL:
-        return {"macd": 0, "signal": 0, "histogram": 0, "trend": "NEUTRAL"}
+        return {"macd": 0, "signal": 0, "histogram": 0, "histogram_pct": 0, "trend": "NEUTRAL"}
     macd = MACD(close=df["close"], window_slow=MACD_SLOW, window_fast=MACD_FAST, window_sign=MACD_SIGNAL)
     macd_line = macd.macd().iloc[-1]
     signal_line = macd.macd_signal().iloc[-1]
     histogram = macd.macd_diff().iloc[-1]
+    price = df["close"].iloc[-1]
     if np.isnan(macd_line) or np.isnan(signal_line):
         trend = "NEUTRAL"
     elif macd_line > signal_line and histogram > 0:
@@ -70,10 +71,13 @@ def calculate_macd(df: pd.DataFrame) -> dict:
         trend = "BEARISH"
     else:
         trend = "NEUTRAL"
+    # Histogram as % of price — comparable across all coins
+    hist_pct = round(histogram / price * 100, 4) if price > 0 and not np.isnan(histogram) else 0
     return {
         "macd": round(macd_line, 4) if not np.isnan(macd_line) else 0,
         "signal": round(signal_line, 4) if not np.isnan(signal_line) else 0,
         "histogram": round(histogram, 4) if not np.isnan(histogram) else 0,
+        "histogram_pct": hist_pct,
         "trend": trend,
     }
 
@@ -83,11 +87,13 @@ def calculate_macd(df: pd.DataFrame) -> dict:
 # ============================================================
 
 def calculate_volume_analysis(df: pd.DataFrame) -> dict:
-    if df.empty or len(df) < 21:
+    if df.empty or len(df) < 22:
         return {"vol_trend": "NEUTRAL", "vol_ratio": 1.0, "obv_trend": "NEUTRAL"}
-    vol_avg = df["volume"].rolling(20).mean().iloc[-1]
-    vol_current = df["volume"].iloc[-1]
-    vol_ratio = round(vol_current / vol_avg, 2) if vol_avg > 0 else 1.0
+    # Use second-to-last candle (-2) because the current candle (-1) is still forming
+    # and would always show artificially low volume
+    vol_avg = df["volume"].iloc[:-1].rolling(20).mean().iloc[-1]
+    vol_completed = df["volume"].iloc[-2]
+    vol_ratio = round(vol_completed / vol_avg, 2) if vol_avg > 0 else 1.0
     if vol_ratio > 1.5: vol_trend = "HIGH"
     elif vol_ratio > 1.0: vol_trend = "ABOVE_AVG"
     elif vol_ratio > 0.5: vol_trend = "BELOW_AVG"
@@ -95,7 +101,7 @@ def calculate_volume_analysis(df: pd.DataFrame) -> dict:
     try:
         obv = OnBalanceVolumeIndicator(close=df["close"], volume=df["volume"])
         obv_series = obv.on_balance_volume()
-        obv_sma = obv_series.rolling(10).mean()
+        obv_sma = obv_series.rolling(20).mean()  # 20-period SMA (was 10 — too noisy)
         obv_trend = "BULLISH" if obv_series.iloc[-1] > obv_sma.iloc[-1] else "BEARISH"
     except Exception:
         obv_trend = "NEUTRAL"
@@ -363,15 +369,17 @@ def compute_individual_scores(
     reasons["rsi_1d"] = r
 
     # --- MACD (max ±20) ---
-    md = macd_data or {"trend": "NEUTRAL", "histogram": 0}
+    md = macd_data or {"trend": "NEUTRAL", "histogram": 0, "histogram_pct": 0}
     s = 0; r = ""
+    hist_pct = md.get("histogram_pct", 0)
     if md["trend"] == "BULLISH":
-        s = 15 + (5 if md["histogram"] > 0 else 0)
-        r = "MACD bullish" + (" + Hist. steigend" if md["histogram"] > 0 else "")
+        # Base 15 for direction + up to 5 bonus for histogram strength
+        s = 15 + min(5, int(abs(hist_pct) * 10))
+        r = f"MACD bullish (Hist: {hist_pct:+.2f}%)"
     elif md["trend"] == "BEARISH":
-        s = -(15 + (5 if md["histogram"] < 0 else 0))
-        r = "MACD bearish" + (" + Hist. fallend" if md["histogram"] < 0 else "")
-    scores["macd"] = s
+        s = -(15 + min(5, int(abs(hist_pct) * 10)))
+        r = f"MACD bearish (Hist: {hist_pct:+.2f}%)"
+    scores["macd"] = max(-20, min(20, s))
     reasons["macd"] = r
 
     # --- Volume & OBV (max ±15) ---
