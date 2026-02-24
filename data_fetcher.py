@@ -308,44 +308,91 @@ def fetch_klines_smart(symbol: str, interval: str) -> pd.DataFrame:
     return df
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+# GitHub cryptocurrency-icons base URL (no API needed, always available)
+_GH_ICON_BASE = "https://raw.githubusercontent.com/spothq/cryptocurrency-icons/master/128/color"
+
+# Coin name mapping for when CoinGecko is unavailable
+_COIN_NAMES = {
+    "BTC": "Bitcoin", "ETH": "Ethereum", "XRP": "XRP", "BNB": "BNB",
+    "SOL": "Solana", "TRX": "TRON", "DOGE": "Dogecoin", "ADA": "Cardano",
+    "LINK": "Chainlink", "AVAX": "Avalanche", "XLM": "Stellar", "HBAR": "Hedera",
+    "DOT": "Polkadot", "BCH": "Bitcoin Cash", "LTC": "Litecoin", "SHIB": "Shiba Inu",
+    "UNI": "Uniswap", "TON": "Toncoin", "NEAR": "NEAR Protocol", "AAVE": "Aave",
+    "ZEC": "Zcash", "SUI": "Sui", "PEPE": "Pepe", "POL": "Polygon",
+    "WLD": "Worldcoin", "ATOM": "Cosmos", "ENA": "Ethena", "ONDO": "Ondo",
+    "QNT": "Quant", "RENDER": "Render", "FIL": "Filecoin", "VET": "VeChain",
+    "ETC": "Ethereum Classic", "TAO": "Bittensor", "INJ": "Injective",
+    "STX": "Stacks", "ICP": "Internet Computer", "PAXG": "PAX Gold",
+    "ARB": "Arbitrum", "OP": "Optimism", "FET": "Fetch.ai", "SEI": "Sei",
+    "JUP": "Jupiter", "BONK": "Bonk", "FLOKI": "Floki", "IMX": "Immutable",
+    "APT": "Aptos", "ALGO": "Algorand", "GRT": "The Graph", "THETA": "Theta",
+    "SAND": "The Sandbox", "MANA": "Decentraland", "AXS": "Axie Infinity",
+    "GALA": "Gala", "CRV": "Curve", "DASH": "Dash", "LDO": "Lido DAO",
+    "JASMY": "JasmyCoin", "IOTA": "IOTA", "PENGU": "Pudgy Penguins",
+    "VIRTUAL": "Virtuals Protocol", "PUMP": "PumpFun", "MORPHO": "Morpho",
+    "NEXO": "Nexo", "TUSD": "TrueUSD", "PYTH": "Pyth Network", "SUN": "Sun",
+    "TIA": "Celestia", "CFX": "Conflux", "ENS": "ENS", "WIF": "dogwifhat",
+    "COMP": "Compound", "DEXE": "DeXe", "LUNC": "Terra Luna Classic",
+    "STRK": "Starknet", "PENDLE": "Pendle", "ETHFI": "Ether.fi", "CHZ": "Chiliz",
+    "XTZ": "Tezos", "BAT": "Basic Attention Token", "ZRO": "LayerZero",
+    "CAKE": "PancakeSwap", "TRUMP": "TRUMP", "GNO": "Gnosis", "CVX": "Convex",
+    "ZK": "zkSync", "GLM": "Golem", "KITE": "Kite AI", "AWE": "Awe",
+    "SKY": "Sky", "RAY": "Raydium", "SYRUP": "Maple", "BARD": "Bard AI",
+    "SENT": "Sentinel", "DCR": "Decred", "JST": "JUST", "ONT": "Ontology",
+    "FF": "Forefront", "KAIA": "Kaia", "NEO": "Neo", "TWT": "Trust Wallet",
+    "USDC": "USD Coin", "USDE": "USDe", "USD1": "USD1", "WLFI": "WLFI",
+    "RLUSD": "RLUSD", "FDUSD": "FDUSD",
+}
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_all_market_data() -> pd.DataFrame:
     """
     Fetch market overview from CoinGecko (metadata, rank, images, changes).
-    Cached 5min. Includes retry on rate limit.
+    Cached 5min. If CoinGecko is unavailable, builds fallback with GitHub icons.
     """
     all_data = []
     for page in [1, 2]:
-        for attempt in range(3):
+        for attempt in range(2):
             data = get_coingecko_market_data(page=page)
             if data:
                 all_data.extend(data)
                 break
-            # Rate limited or failed — wait and retry
             time.sleep(2 * (attempt + 1))
         if page < 2:
             time.sleep(0.5)
 
-    if not all_data:
-        return pd.DataFrame()
+    if all_data:
+        df = pd.DataFrame(all_data)
+        df = df.rename(columns={
+            "symbol": "symbol_lower",
+            "current_price": "price",
+            "market_cap_rank": "rank",
+            "market_cap": "market_cap",
+            "total_volume": "volume_24h",
+            "price_change_percentage_24h": "change_24h_pct",
+            "price_change_percentage_1h_in_currency": "change_1h",
+            "price_change_percentage_24h_in_currency": "change_24h",
+            "price_change_percentage_7d_in_currency": "change_7d",
+            "price_change_percentage_30d_in_currency": "change_30d",
+        })
+        df["symbol"] = df["symbol_lower"].str.upper()
+        return df
 
-    df = pd.DataFrame(all_data)
-    df = df.rename(columns={
-        "symbol": "symbol_lower",
-        "current_price": "price",
-        "market_cap_rank": "rank",
-        "market_cap": "market_cap",
-        "total_volume": "volume_24h",
-        "price_change_percentage_24h": "change_24h_pct",
-        "price_change_percentage_1h_in_currency": "change_1h",
-        "price_change_percentage_24h_in_currency": "change_24h",
-        "price_change_percentage_7d_in_currency": "change_7d",
-        "price_change_percentage_30d_in_currency": "change_30d",
-    })
-    df["symbol"] = df["symbol_lower"].str.upper()
-
-    return df
+    # --- FALLBACK: CoinGecko unavailable — build minimal metadata ---
+    # Uses GitHub icons (no API call) + coin name map
+    from config import CRYPTOWAVES_COINS
+    fallback_rows = []
+    for i, sym in enumerate(CRYPTOWAVES_COINS):
+        fallback_rows.append({
+            "symbol": sym,
+            "name": _COIN_NAMES.get(sym, sym),
+            "image": f"{_GH_ICON_BASE}/{sym.lower()}.png",
+            "rank": i + 1,  # Approximate rank from list position
+            "price": 0, "volume_24h": 0, "market_cap": 0,
+            "change_1h": 0, "change_24h": 0, "change_7d": 0, "change_30d": 0,
+        })
+    return pd.DataFrame(fallback_rows)
 
 
 @st.cache_data(ttl=60, show_spinner=False)
