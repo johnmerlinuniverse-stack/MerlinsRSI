@@ -45,11 +45,13 @@ TF_MAP = {
 # ============================================================
 
 @st.cache_resource(show_spinner=False)
-def get_working_exchange() -> tuple:
+def _init_exchanges() -> list:
     """
-    Find the first reachable exchange. Returns (name, exchange_object).
-    Cached for the entire session (st.cache_resource).
+    Initialize ALL reachable exchanges upfront.
+    Returns list of (name, exchange_object) tuples.
+    Cached for the entire session.
     """
+    available = []
     for name, exchange_cls in EXCHANGE_PRIORITY:
         try:
             ex = exchange_cls({
@@ -59,45 +61,71 @@ def get_working_exchange() -> tuple:
             })
             # Quick connectivity test
             ex.fetch_ticker("BTC/USDT")
-            return (name, ex)
+            available.append((name, ex))
         except Exception:
             continue
+    return available
 
+
+def get_working_exchange() -> tuple:
+    """Get the PRIMARY exchange (first reachable). For backward compat."""
+    exchanges = _init_exchanges()
+    if exchanges:
+        return exchanges[0]
     return ("none", None)
 
 
 def get_exchange_status() -> dict:
     """Check which exchanges are reachable."""
-    name, ex = get_working_exchange()
-    return {
-        "active_exchange": name,
-        "connected": ex is not None,
-    }
+    exchanges = _init_exchanges()
+    if exchanges:
+        names = [n for n, _ in exchanges]
+        return {
+            "active_exchange": names[0],
+            "connected": True,
+            "all_exchanges": names,
+        }
+    return {"active_exchange": "none", "connected": False, "all_exchanges": []}
+
+
+# Per-coin exchange cache: tracks which exchange works for each symbol
+# This avoids retrying dead exchanges on every scan
+_coin_exchange_cache = {}  # symbol → exchange_name
 
 
 # ============================================================
-# CCXT DATA FETCHING
+# CCXT DATA FETCHING (multi-exchange fallback per coin)
 # ============================================================
 
 def fetch_ohlcv_ccxt(symbol: str, timeframe: str, limit: int = KLINE_LIMIT) -> pd.DataFrame:
     """
-    Fetch OHLCV data via CCXT from the best available exchange.
-    Includes retry with backoff to handle rate-limiting.
-    Returns DataFrame with: open_time, open, high, low, close, volume
+    Fetch OHLCV data, trying multiple exchanges per coin.
+    Order: cached exchange for this coin → primary → all others.
     """
-    name, ex = get_working_exchange()
-    if ex is None:
+    exchanges = _init_exchanges()
+    if not exchanges:
         return pd.DataFrame()
 
     pair = f"{symbol}/USDT"
     tf = TF_MAP.get(timeframe, timeframe)
 
-    max_retries = 3
-    for attempt in range(max_retries):
+    # Build exchange order: cached winner first, then primary, then rest
+    cached_ex_name = _coin_exchange_cache.get(symbol)
+    ordered = []
+    if cached_ex_name:
+        for n, ex in exchanges:
+            if n == cached_ex_name:
+                ordered.append((n, ex))
+                break
+    for n, ex in exchanges:
+        if n != cached_ex_name:
+            ordered.append((n, ex))
+
+    for name, ex in ordered:
         try:
             ohlcv = ex.fetch_ohlcv(pair, tf, limit=limit)
             if not ohlcv:
-                return pd.DataFrame()
+                continue
 
             df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
             df["open_time"] = pd.to_datetime(df["timestamp"], unit="ms")
@@ -108,15 +136,14 @@ def fetch_ohlcv_ccxt(symbol: str, timeframe: str, limit: int = KLINE_LIMIT) -> p
             df["quote_volume"] = df["volume"] * df["close"]
             df["trades"] = 0
 
+            # Remember which exchange worked for this coin
+            _coin_exchange_cache[symbol] = name
             return df[["open_time", "open", "high", "low", "close", "volume", "quote_volume", "trades"]]
 
-        except Exception as e:
-            err_str = str(e).lower()
-            # Retry on rate limit or timeout errors
-            if attempt < max_retries - 1 and ("429" in err_str or "rate" in err_str or "timeout" in err_str or "timed out" in err_str):
-                time.sleep(0.5 * (attempt + 1))  # 0.5s, 1.0s backoff
-                continue
-            return pd.DataFrame()
+        except Exception:
+            continue
+
+    return pd.DataFrame()
 
 
 def fetch_ticker_ccxt(symbol: str) -> dict:
