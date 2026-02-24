@@ -168,30 +168,32 @@ def fetch_ticker_ccxt(symbol: str) -> dict:
 
 
 def fetch_all_tickers_ccxt() -> dict:
-    """Fetch all tickers at once (much faster than one-by-one)."""
-    name, ex = get_working_exchange()
-    if ex is None:
+    """Fetch all tickers from ALL available exchanges (not just primary).
+    Result is merged: primary exchange wins, others fill gaps."""
+    exchanges = _init_exchanges()
+    if not exchanges:
         return {}
 
-    try:
-        if ex.has.get("fetchTickers", False):
-            all_tickers = ex.fetch_tickers()
-            result = {}
-            for pair, ticker in all_tickers.items():
-                if pair.endswith("/USDT"):
-                    sym = pair.replace("/USDT", "")
-                    result[sym] = {
-                        "last": ticker.get("last", 0),
-                        "change_pct": ticker.get("percentage", 0),
-                        "volume": ticker.get("quoteVolume", 0) or 0,
-                        "high": ticker.get("high", 0),
-                        "low": ticker.get("low", 0),
-                    }
-            return result
-    except Exception:
-        pass
+    result = {}
+    for name, ex in exchanges:
+        try:
+            if ex.has.get("fetchTickers", False):
+                all_tickers = ex.fetch_tickers()
+                for pair, ticker in all_tickers.items():
+                    if pair.endswith("/USDT"):
+                        sym = pair.replace("/USDT", "")
+                        if sym not in result:  # First exchange wins (primary has priority)
+                            result[sym] = {
+                                "last": ticker.get("last", 0),
+                                "change_pct": ticker.get("percentage", 0),
+                                "volume": ticker.get("quoteVolume", 0) or 0,
+                                "high": ticker.get("high", 0),
+                                "low": ticker.get("low", 0),
+                            }
+        except Exception:
+            continue
 
-    return {}
+    return result
 
 
 # ============================================================
@@ -307,18 +309,23 @@ def fetch_klines_smart(symbol: str, interval: str) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def fetch_all_market_data() -> pd.DataFrame:
     """
-    Fetch market overview from CoinGecko (always reliable for metadata).
-    Returns DataFrame with market cap, rank, price changes.
+    Fetch market overview from CoinGecko (metadata, rank, images, changes).
+    Cached 5min. Includes retry on rate limit.
     """
     all_data = []
     for page in [1, 2]:
-        data = get_coingecko_market_data(page=page)
-        if data:
-            all_data.extend(data)
+        for attempt in range(3):
+            data = get_coingecko_market_data(page=page)
+            if data:
+                all_data.extend(data)
+                break
+            # Rate limited or failed — wait and retry
+            time.sleep(2 * (attempt + 1))
         if page < 2:
-            time.sleep(0.3)
+            time.sleep(0.5)
 
     if not all_data:
         return pd.DataFrame()
