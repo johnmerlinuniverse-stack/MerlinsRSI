@@ -163,13 +163,6 @@ with st.sidebar:
     if font_scale != st.session_state.get("font_scale", 1.0):
         st.session_state["font_scale"] = font_scale; st.rerun()
     st.markdown("---")
-
-    st.markdown("### ⏱️ Extra Timeframes")
-    st.caption("RSI wird **immer** auf 1h, 4h, 1D, 1W berechnet. Hier kannst du zusätzliche Analysen aktivieren:")
-    selected_timeframes = st.multiselect("Heatmap-Timeframes",
-        list(TIMEFRAMES.keys()), default=["4h", "1D"],
-        help="Welche Timeframes im RSI-Heatmap-Dropdown zur Auswahl stehen")
-    st.markdown("---")
     if st.button("🔄 Refresh", use_container_width=True):
         st.cache_data.clear(); st.rerun()
     st.caption("Data: CCXT + CoinGecko")
@@ -309,7 +302,7 @@ def scan_all(coins, tfs, smc=False):
 # LOAD
 # ============================================================
 coins_to_scan = coin_source[:max_coins]
-tf_to_scan = selected_timeframes or ["4h","1D"]
+tf_to_scan = ["1h", "4h", "1D", "1W"]  # Always scan all timeframes
 df = scan_all(tuple(coins_to_scan), tuple(tf_to_scan), False)
 if df.empty: st.warning("⚠️ No data."); st.stop()
 
@@ -555,7 +548,7 @@ with tab_alerts:
 # ============================================================
 with tab_hm:
     h1,h2,h3=st.columns([2,1,1])
-    with h1: htf=st.selectbox("Timeframe",tf_to_scan,index=0,key="htf")
+    with h1: htf=st.selectbox("Timeframe",tf_to_scan,index=1,key="htf")
     with h2: hx=st.selectbox("X-Axis",["Coin Rank","Random"],index=0,key="hx")
     with h3: search=st.text_input("🔍 Search Coin",key="hm_search",placeholder="e.g. BTC").strip().upper()
 
