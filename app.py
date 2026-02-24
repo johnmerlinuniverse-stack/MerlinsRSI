@@ -284,7 +284,7 @@ def scan_all(coins, tfs, smc=False):
         r["border_alpha"]=border_alpha(r.get("rsi_4h",50),r["signal"])
         ptf="4h" if "4h" in kld else (list(tfs)[0] if tfs else None)
         if ptf and ptf in kld:
-            md=calculate_macd(kld[ptf]); r["macd_trend"]=md["trend"]; r["macd_histogram"]=md["histogram"]
+            md=calculate_macd(kld[ptf]); r["macd_trend"]=md["trend"]; r["macd_histogram"]=md["histogram"]; r["macd_histogram_pct"]=md.get("histogram_pct",0)
             vd=calculate_volume_analysis(kld[ptf]); r["vol_trend"]=vd["vol_trend"]; r["vol_ratio"]=vd["vol_ratio"]; r["obv_trend"]=vd["obv_trend"]
             sk=calculate_stoch_rsi(kld[ptf]); r["stoch_rsi_k"]=sk["stoch_rsi_k"]; r["stoch_rsi_d"]=sk["stoch_rsi_d"]
             if smc:
@@ -294,7 +294,7 @@ def scan_all(coins, tfs, smc=False):
             cf=generate_confluence_signal(rsi_4h=r.get("rsi_4h",50),rsi_1d=r.get("rsi_1D",50),macd_data=md,volume_data=vd,smc_data=sc_d)
             r["score"]=cf["score"]; r["confluence_rec"]=cf["recommendation"]; r["reasons"]=" | ".join(cf["reasons"][:3])
         else:
-            r.update({"macd_trend":"NEUTRAL","macd_histogram":0,"vol_trend":"—","vol_ratio":1.0,"obv_trend":"—","stoch_rsi_k":50.0,"stoch_rsi_d":50.0,"score":0,"confluence_rec":"WAIT","reasons":""})
+            r.update({"macd_trend":"NEUTRAL","macd_histogram":0,"macd_histogram_pct":0,"vol_trend":"—","vol_ratio":1.0,"obv_trend":"—","stoch_rsi_k":50.0,"stoch_rsi_d":50.0,"score":0,"confluence_rec":"WAIT","reasons":""})
         results.append(r)
     return pd.DataFrame(results) if results else pd.DataFrame()
 
@@ -708,10 +708,10 @@ with tab_conf:
 💡 **Score-Badge** (z.B. ⚡42) erscheint auch in *24h Alerts* und *By Market Cap*.""")
 
     # --- COMPUTE EXTENDED SCORES ON-DEMAND ---
-    # This is the ONLY place where additional indicators are computed.
-    # scan_all remains untouched — we fetch extra klines here if needed.
+    # Uses the SAME compute_individual_scores() as scan_all for consistency.
+    # Extra indicators (EMA, Divergence, BB, SMC) are computed here on-demand.
     active_filters = st.session_state.get("conf_filters", {k: v["default"] for k, v in CONFLUENCE_FILTERS.items()})
-    needs_extra = any(active_filters.get(k, False) for k in ["smart_money", "ema_alignment", "rsi_divergence", "bollinger", "funding_rate", "fear_greed"])
+    needs_extra = any(active_filters.get(k, False) for k in ["smart_money", "ema_alignment", "rsi_divergence", "bollinger"])
 
     # Lazy-load funding rates only if filter is active
     funding_rates_map = {}
@@ -725,131 +725,66 @@ with tab_conf:
     scored_rows = []
     for _, row in df.iterrows():
         sym = row["symbol"]
-        scores = {}
-        reasons = {}
 
-        # --- Basic scores (from data already in df) ---
-        rsi4 = row.get("rsi_4h", 50)
-        rsi1d = row.get("rsi_1D", 50)
+        # Prepare data dicts from scan_all results
+        macd_data = {
+            "trend": row.get("macd_trend", "NEUTRAL"),
+            "histogram": row.get("macd_histogram", 0),
+            "histogram_pct": row.get("macd_histogram_pct", 0),
+        }
+        volume_data = {
+            "vol_trend": row.get("vol_trend", "NEUTRAL"),
+            "vol_ratio": row.get("vol_ratio", 1.0),
+            "obv_trend": row.get("obv_trend", "NEUTRAL"),
+        }
+        stoch_data = {
+            "stoch_rsi_k": row.get("stoch_rsi_k", 50.0),
+            "stoch_rsi_d": row.get("stoch_rsi_d", 50.0),
+        }
 
-        # RSI 4h
-        if rsi4 <= 25: scores["rsi_4h"] = 30; reasons["rsi_4h"] = f"RSI 4h stark überverkauft ({rsi4:.0f})"
-        elif rsi4 <= 35: scores["rsi_4h"] = 20; reasons["rsi_4h"] = f"RSI 4h überverkauft ({rsi4:.0f})"
-        elif rsi4 <= 45: scores["rsi_4h"] = 10; reasons["rsi_4h"] = f"RSI 4h leicht bullish ({rsi4:.0f})"
-        elif rsi4 >= 75: scores["rsi_4h"] = -30; reasons["rsi_4h"] = f"RSI 4h stark überkauft ({rsi4:.0f})"
-        elif rsi4 >= 65: scores["rsi_4h"] = -20; reasons["rsi_4h"] = f"RSI 4h überkauft ({rsi4:.0f})"
-        elif rsi4 >= 55: scores["rsi_4h"] = -10; reasons["rsi_4h"] = f"RSI 4h leicht bearish ({rsi4:.0f})"
-        else: scores["rsi_4h"] = 0
-
-        # RSI 1D
-        if rsi1d <= 30: scores["rsi_1d"] = 20; reasons["rsi_1d"] = f"RSI 1D überverkauft ({rsi1d:.0f})"
-        elif rsi1d <= 42: scores["rsi_1d"] = 10; reasons["rsi_1d"] = f"RSI 1D bullish ({rsi1d:.0f})"
-        elif rsi1d >= 70: scores["rsi_1d"] = -20; reasons["rsi_1d"] = f"RSI 1D überkauft ({rsi1d:.0f})"
-        elif rsi1d >= 58: scores["rsi_1d"] = -10; reasons["rsi_1d"] = f"RSI 1D bearish ({rsi1d:.0f})"
-        else: scores["rsi_1d"] = 0
-
-        # MACD (from scan_all)
-        mt = row.get("macd_trend", "NEUTRAL")
-        mh = row.get("macd_histogram", 0)
-        if mt == "BULLISH": scores["macd"] = 15 + min(5, abs(mh) * 500); reasons["macd"] = f"MACD bullish"
-        elif mt == "BEARISH": scores["macd"] = -(15 + min(5, abs(mh) * 500)); reasons["macd"] = f"MACD bearish"
-        else: scores["macd"] = 0
-
-        # Volume & OBV
-        vr = row.get("vol_ratio", 1.0); ot = row.get("obv_trend", "NEUTRAL")
-        vol_sc = 0
-        if vr > 1.5 and ot == "BULLISH": vol_sc = 15; reasons["volume_obv"] = f"Vol hoch + OBV bullish"
-        elif vr > 1.2 and ot == "BULLISH": vol_sc = 10; reasons["volume_obv"] = f"Vol ok + OBV bullish"
-        elif ot == "BULLISH": vol_sc = 5; reasons["volume_obv"] = f"OBV bullish"
-        elif vr > 1.5 and ot == "BEARISH": vol_sc = -15; reasons["volume_obv"] = f"Vol hoch + OBV bearish"
-        elif vr > 1.2 and ot == "BEARISH": vol_sc = -10; reasons["volume_obv"] = f"Vol ok + OBV bearish"
-        elif ot == "BEARISH": vol_sc = -5; reasons["volume_obv"] = f"OBV bearish"
-        scores["volume_obv"] = vol_sc
-
-        # Stoch RSI
-        sk = row.get("stoch_rsi_k", 50); sd = row.get("stoch_rsi_d", 50)
-        if sk < 20: scores["stoch_rsi"] = 12; reasons["stoch_rsi"] = f"StochRSI überverkauft ({sk:.0f})"
-        elif sk < 30 and sk > sd: scores["stoch_rsi"] = 8; reasons["stoch_rsi"] = f"StochRSI bullish crossover"
-        elif sk > 80: scores["stoch_rsi"] = -12; reasons["stoch_rsi"] = f"StochRSI überkauft ({sk:.0f})"
-        elif sk > 70 and sk < sd: scores["stoch_rsi"] = -8; reasons["stoch_rsi"] = f"StochRSI bearish crossover"
-        else: scores["stoch_rsi"] = 0
-
-        # --- Extra indicators (computed on-demand, only if filter active) ---
+        # On-demand extra indicators
+        smc_data = None; ema_data = None; div_data = None; bb_data = None
         if needs_extra:
             kl_4h = fetch_klines_smart(sym, "4h")
             if not kl_4h.empty and len(kl_4h) >= 15:
-                # Smart Money
                 if active_filters.get("smart_money", False):
                     ob = detect_order_blocks(kl_4h); ms = detect_market_structure(kl_4h)
-                    ob_sig = ob.get("ob_signal", "NONE"); struct = ms.get("structure", "UNKNOWN")
-                    smc_sc = 0
-                    if ob_sig == "BULLISH": smc_sc += 8
-                    elif ob_sig == "BEARISH": smc_sc -= 8
-                    if struct == "BULLISH": smc_sc += 7
-                    elif struct == "BEARISH": smc_sc -= 7
-                    scores["smart_money"] = max(-15, min(15, smc_sc))
-                    if smc_sc != 0: reasons["smart_money"] = f"SMC: OB={ob_sig} Struct={struct}"
-
-                # EMA Alignment
+                    smc_data = {"ob_signal": ob.get("ob_signal", "NONE"),
+                                "fvg_signal": "BALANCED",
+                                "structure": ms.get("structure", "UNKNOWN")}
                 if active_filters.get("ema_alignment", False):
-                    ema_d = calculate_ema_alignment_fast(kl_4h)
-                    et = ema_d.get("ema_trend", "NEUTRAL")
-                    if et == "BULLISH": scores["ema_alignment"] = 12; reasons["ema_alignment"] = "EMA bullish aligned"
-                    elif et == "BEARISH": scores["ema_alignment"] = -12; reasons["ema_alignment"] = "EMA bearish aligned"
-                    else: scores["ema_alignment"] = 0
-
-                # RSI Divergence
+                    ema_data = calculate_ema_alignment_fast(kl_4h)
                 if active_filters.get("rsi_divergence", False):
-                    div_d = detect_rsi_divergence(kl_4h)
-                    div = div_d.get("divergence", "NONE"); dt = div_d.get("div_type", "NONE")
-                    if div == "BULLISH": scores["rsi_divergence"] = 15 if dt == "REGULAR" else 10; reasons["rsi_divergence"] = f"RSI Divergenz bullish ({dt})"
-                    elif div == "BEARISH": scores["rsi_divergence"] = -(15 if dt == "REGULAR" else 10); reasons["rsi_divergence"] = f"RSI Divergenz bearish ({dt})"
-                    else: scores["rsi_divergence"] = 0
-
-                # Bollinger Squeeze
+                    div_data = detect_rsi_divergence(kl_4h)
                 if active_filters.get("bollinger", False):
-                    bb_d = calculate_bb_squeeze(kl_4h)
-                    sq = bb_d.get("bb_squeeze", False); bp = bb_d.get("bb_pct", 50)
-                    if sq and bp < 30: scores["bollinger"] = 10; reasons["bollinger"] = f"BB Squeeze bullish ({bp:.0f}%)"
-                    elif sq and bp > 70: scores["bollinger"] = -10; reasons["bollinger"] = f"BB Squeeze bearish ({bp:.0f}%)"
-                    elif bp < 20: scores["bollinger"] = 7; reasons["bollinger"] = f"BB unteres Band ({bp:.0f}%)"
-                    elif bp > 80: scores["bollinger"] = -7; reasons["bollinger"] = f"BB oberes Band ({bp:.0f}%)"
-                    else: scores["bollinger"] = 0
+                    bb_data = calculate_bb_squeeze(kl_4h)
 
-        # Funding Rate (from lazy-loaded batch)
-        if active_filters.get("funding_rate", False):
-            fr_val = funding_rates_map.get(sym, None)
-            if fr_val is not None:
-                if fr_val > 0.05: scores["funding_rate"] = -10; reasons["funding_rate"] = f"Funding hoch ({fr_val:.4f})"
-                elif fr_val > 0.02: scores["funding_rate"] = -5; reasons["funding_rate"] = f"Funding leicht hoch ({fr_val:.4f})"
-                elif fr_val < -0.05: scores["funding_rate"] = 10; reasons["funding_rate"] = f"Funding negativ ({fr_val:.4f})"
-                elif fr_val < -0.02: scores["funding_rate"] = 5; reasons["funding_rate"] = f"Funding leicht negativ ({fr_val:.4f})"
-                else: scores["funding_rate"] = 0
+        # Funding Rate
+        fr_val = funding_rates_map.get(sym, None) if active_filters.get("funding_rate", False) else None
 
         # Fear & Greed
-        if active_filters.get("fear_greed", False) and fear_greed_val is not None:
-            if fear_greed_val <= 15: scores["fear_greed"] = 8; reasons["fear_greed"] = f"Extreme Fear ({fear_greed_val})"
-            elif fear_greed_val <= 30: scores["fear_greed"] = 4; reasons["fear_greed"] = f"Fear ({fear_greed_val})"
-            elif fear_greed_val >= 85: scores["fear_greed"] = -8; reasons["fear_greed"] = f"Extreme Greed ({fear_greed_val})"
-            elif fear_greed_val >= 70: scores["fear_greed"] = -4; reasons["fear_greed"] = f"Greed ({fear_greed_val})"
+        fg_val = fear_greed_val if active_filters.get("fear_greed", False) else None
 
-        # --- Compute total ---
-        raw_score = sum(scores.get(k, 0) for k, v in active_filters.items() if v)
-        max_possible = sum(FILTER_WEIGHTS.get(k, 0) for k, v in active_filters.items() if v)
-        normalized = int(raw_score / max_possible * 100) if max_possible > 0 else 0
-        normalized = max(-100, min(100, normalized))
+        # UNIFIED scoring — same function used everywhere
+        individual = compute_individual_scores(
+            rsi_4h=row.get("rsi_4h", 50),
+            rsi_1d=row.get("rsi_1D", 50),
+            macd_data=macd_data,
+            volume_data=volume_data,
+            stoch_rsi_data=stoch_data,
+            smc_data=smc_data,
+            ema_data=ema_data,
+            divergence_data=div_data,
+            bb_data=bb_data,
+            funding_rate=fr_val,
+            fear_greed=fg_val,
+        )
+        result = compute_confluence_total(individual, active_filters)
 
-        if normalized >= 60: rec = "STRONG BUY"
-        elif normalized >= 30: rec = "BUY"
-        elif normalized >= 10: rec = "LEAN BUY"
-        elif normalized <= -60: rec = "STRONG SELL"
-        elif normalized <= -30: rec = "SELL"
-        elif normalized <= -10: rec = "LEAN SELL"
-        else: rec = "WAIT"
-
-        active_reasons = [reasons[k] for k in active_filters if active_filters.get(k) and k in reasons]
-        scored_rows.append({**row.to_dict(), "dyn_score": normalized, "dyn_rec": rec,
-                           "dyn_reasons": " | ".join(active_reasons[:4])})
+        scored_rows.append({**row.to_dict(),
+            "dyn_score": result["score"],
+            "dyn_rec": result["recommendation"],
+            "dyn_reasons": " | ".join(result["reasons"][:4])})
     sdf = pd.DataFrame(scored_rows)
 
     # --- TOP BUY ---
