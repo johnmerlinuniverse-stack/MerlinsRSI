@@ -255,11 +255,26 @@ def scan_all(coins, tfs, smc=False):
     for sym in coin_list:
         r = {"symbol": sym}
         tk = tickers.get(sym, {}); mk = mkt_lk.get(sym, {})
+
+        # Price: Ticker → CoinGecko Market → Klines Close (fallback chain)
         if tk:
             r["price"]=float(tk.get("last",0)or 0); r["change_24h"]=float(tk.get("change_pct",0)or 0); r["volume_24h"]=float(tk.get("volume",0)or 0)
         elif isinstance(mk,pd.Series) and not mk.empty:
             r["price"]=float(mk.get("price",0))if pd.notna(mk.get("price"))else 0; r["change_24h"]=float(mk.get("change_24h",0))if pd.notna(mk.get("change_24h"))else 0; r["volume_24h"]=float(mk.get("volume_24h",0))if pd.notna(mk.get("volume_24h"))else 0
         else: r["price"],r["change_24h"],r["volume_24h"]=0,0,0
+
+        # Klines price fallback: if no ticker/market price, use last close from 4h klines
+        if r["price"]==0:
+            for fb_tf in ["4h","1h","1D","1W"]:
+                fb_df = klines_cache.get((sym, fb_tf), pd.DataFrame())
+                if not fb_df.empty and len(fb_df)>=2:
+                    r["price"]=float(fb_df["close"].iloc[-1])
+                    # Estimate 24h change from klines
+                    if len(fb_df)>=6 and fb_tf=="4h":
+                        r["change_24h"]=round((fb_df["close"].iloc[-1]/fb_df["close"].iloc[-7]-1)*100,2)
+                    break
+
+        # Metadata from CoinGecko
         if isinstance(mk,pd.Series) and not mk.empty:
             r["rank"]=int(mk.get("rank",999))if pd.notna(mk.get("rank"))else 999
             r["coin_name"]=str(mk.get("name",sym))if pd.notna(mk.get("name"))else sym
@@ -268,7 +283,10 @@ def scan_all(coins, tfs, smc=False):
                 r[f]=float(mk.get(f,0))if pd.notna(mk.get(f))else 0
         else:
             r["rank"],r["coin_name"],r["coin_image"]=999,sym,""; r["change_1h"],r["change_7d"],r["change_30d"]=0,0,0
+
+        # Skip only if we truly have no price from ANY source
         if r["price"]==0: continue
+
         kld={}
         for tf in all_tfs:
             df_k = klines_cache.get((sym, tf), pd.DataFrame())
