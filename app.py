@@ -350,13 +350,32 @@ if "rsi_4h" in df.columns:
                    f"Das deutet auf Rate-Limiting der Exchange hin. Klicke **🔄 Refresh** in der Sidebar um den Cache zu leeren und erneut zu laden.")
     with st.expander(f"🔧 Diagnostik — {rsi_ok}/{total} Coins mit echten RSI-Daten", expanded=False):
         ex_info = get_exchange_status()
-        st.markdown(f"**Exchange:** {ex_info['active_exchange'].upper()} ({'✅ verbunden' if ex_info['connected'] else '❌ nicht verbunden'})")
+        st.markdown(f"**Primary Exchange:** {ex_info['active_exchange'].upper()} ({'✅ verbunden' if ex_info['connected'] else '❌ nicht verbunden'})")
+        all_ex = ex_info.get("all_exchanges", [])
+        if len(all_ex) > 1:
+            st.markdown(f"**Verfügbare Exchanges:** {', '.join(e.upper() for e in all_ex)}")
         st.markdown(f"**Klines OK:** {rsi_ok} / {total} ({rsi_ok/total*100:.0f}%)")
         st.markdown(f"**Klines fehlend:** {rsi_fail} / {total}")
         st.markdown(f"**Signal-TFs aktiv:** {', '.join(sorted(active_sig_tfs))}")
         if rsi_fail > 0:
             fail_coins = df[df["rsi_4h"] == 50.0]["symbol"].tolist()[:20]
             st.markdown(f"**Betroffene Coins (max 20):** {', '.join(fail_coins)}")
+            # Known untradeable tokens
+            stablecoins = {"USD1", "WLFI", "RLUSD", "FDUSD", "TUSD", "USDC", "USDE"}
+            untradeable = [c for c in fail_coins if c in stablecoins]
+            tradeable_fail = [c for c in fail_coins if c not in stablecoins]
+            if untradeable:
+                st.caption(f"ℹ️ Stablecoins/Governance (kein RSI möglich): {', '.join(untradeable)}")
+            if tradeable_fail:
+                st.caption(f"⚠️ Echte Coins ohne Daten: {', '.join(tradeable_fail)} — auf keiner Exchange als /USDT gefunden")
+        # Show per-coin exchange mapping
+        from data_fetcher import _coin_exchange_cache
+        if _coin_exchange_cache:
+            ex_counts = {}
+            for coin, exname in _coin_exchange_cache.items():
+                ex_counts[exname] = ex_counts.get(exname, 0) + 1
+            ex_summary = " | ".join(f"{n.upper()}: {c} Coins" for n, c in sorted(ex_counts.items(), key=lambda x: -x[1]))
+            st.markdown(f"**Exchange-Verteilung:** {ex_summary}")
         # Image diagnostic
         if "coin_image" in df.columns:
             img_ok = len(df[df["coin_image"].astype(str).str.startswith("http")])
@@ -491,10 +510,12 @@ else: ml,bc="BEARISH","br"
 a1=df["change_1h"].mean() if "change_1h" in df.columns else 0
 a24=df["change_24h"].mean(); a7=df["change_7d"].mean() if "change_7d" in df.columns else 0; a30=df["change_30d"].mean() if "change_30d" in df.columns else 0
 ex=get_exchange_status(); exn=ex["active_exchange"].upper() if ex["connected"] else "CoinGecko"
+all_ex = ex.get("all_exchanges", [])
+ex_display = "+".join(e.upper() for e in all_ex) if len(all_ex) > 1 else exn
 sig_tfs_str = "+".join(sorted(active_sig_tfs, key=lambda t: ["1h","4h","1D","1W"].index(t) if t in ["1h","4h","1D","1W"] else 99))
 st.markdown(f'''<div class="hbar"><div><span class="htitle">🧙‍♂️ Merlin Crypto Scanner</span> <span class="badge {bc}">Market: {ml}</span></div>
 <div class="hstat">Avg RSI (4h): <b>{avg4:.2f}</b> ({(avg4-50)/50*100:+.2f}%) | Ch%: <span class="{cc(a1)}">{a1:+.2f}%</span> <span class="{cc(a24)}">{a24:+.2f}%</span> <span class="{cc(a7)}">{a7:+.2f}%</span> <span class="{cc(a30)}">{a30:+.2f}%</span></div>
-<div class="hstat"><span style="color:#FF6347;">🔴 {sct}</span> <span style="color:#FFD700;">🟡 {wct}</span> <span style="color:#00FF7F;">🟢 {bct}</span> | 📡 {exn} | Sig: {sig_tfs_str}</div></div>''', unsafe_allow_html=True)
+<div class="hstat"><span style="color:#FF6347;">🔴 {sct}</span> <span style="color:#FFD700;">🟡 {wct}</span> <span style="color:#00FF7F;">🟢 {bct}</span> | 📡 {ex_display} | Sig: {sig_tfs_str}</div></div>''', unsafe_allow_html=True)
 
 # ============================================================
 # TABS
@@ -1438,4 +1459,4 @@ with tab_det:
         st.caption("⚠️ DYOR — Dies ist keine Finanzberatung. Alle Berechnungen basieren auf historischen Daten.")
 
 st.markdown("---")
-st.markdown(f"<div style='text-align:center;color:#555;font-size:11px;'>🧙‍♂️ Merlin | {len(coins_to_scan)}×{len(tf_to_scan)}TF | {exn} | BUY≤42 SELL≥58 | DYOR!</div>",unsafe_allow_html=True)
+st.markdown(f"<div style='text-align:center;color:#555;font-size:11px;'>🧙‍♂️ Merlin | {len(coins_to_scan)}×{len(tf_to_scan)}TF | {ex_display} | BUY≤42 SELL≥58 | DYOR!</div>",unsafe_allow_html=True)
