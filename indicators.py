@@ -57,11 +57,12 @@ def calculate_stoch_rsi(df: pd.DataFrame, period: int = RSI_PERIOD) -> dict:
 
 def calculate_macd(df: pd.DataFrame) -> dict:
     if df.empty or len(df) < MACD_SLOW + MACD_SIGNAL:
-        return {"macd": 0, "signal": 0, "histogram": 0, "histogram_pct": 0, "trend": "NEUTRAL"}
+        return {"macd": 0, "signal": 0, "histogram": 0, "histogram_pct": 0, "trend": "NEUTRAL", "hist_direction": "FLAT"}
     macd = MACD(close=df["close"], window_slow=MACD_SLOW, window_fast=MACD_FAST, window_sign=MACD_SIGNAL)
     macd_line = macd.macd().iloc[-1]
     signal_line = macd.macd_signal().iloc[-1]
     histogram = macd.macd_diff().iloc[-1]
+    hist_prev = macd.macd_diff().iloc[-2] if len(macd.macd_diff().dropna()) >= 2 else histogram
     price = df["close"].iloc[-1]
     if np.isnan(macd_line) or np.isnan(signal_line):
         trend = "NEUTRAL"
@@ -71,6 +72,16 @@ def calculate_macd(df: pd.DataFrame) -> dict:
         trend = "BEARISH"
     else:
         trend = "NEUTRAL"
+    # S3: Histogram direction — is momentum growing or fading?
+    if not np.isnan(hist_prev):
+        if histogram > hist_prev + 0.0001:
+            hist_direction = "GROWING"
+        elif histogram < hist_prev - 0.0001:
+            hist_direction = "SHRINKING"
+        else:
+            hist_direction = "FLAT"
+    else:
+        hist_direction = "FLAT"
     # Histogram as % of price — comparable across all coins
     hist_pct = round(histogram / price * 100, 4) if price > 0 and not np.isnan(histogram) else 0
     return {
@@ -79,6 +90,7 @@ def calculate_macd(df: pd.DataFrame) -> dict:
         "histogram": round(histogram, 4) if not np.isnan(histogram) else 0,
         "histogram_pct": hist_pct,
         "trend": trend,
+        "hist_direction": hist_direction,
     }
 
 
@@ -241,6 +253,7 @@ def detect_rsi_divergence(df: pd.DataFrame, period: int = RSI_PERIOD, lookback: 
     Detect RSI divergence (bullish & bearish).
     Bullish: Price makes Lower Low, RSI makes Higher Low.
     Bearish: Price makes Higher High, RSI makes Lower High.
+    S5: Uses 3-candle pivots (was 5) + min 1% price difference for crypto volatility.
     """
     if df.empty or len(df) < lookback + period:
         return {"divergence": "NONE", "div_type": "NONE"}
@@ -252,37 +265,44 @@ def detect_rsi_divergence(df: pd.DataFrame, period: int = RSI_PERIOD, lookback: 
     prices = df["close"].tail(lookback).values
     rsi_vals = rsi_series.tail(lookback).values
 
-    # Find recent swing lows/highs in price (simplified)
-    price_lows = []
-    price_highs = []
-    rsi_at_lows = []
-    rsi_at_highs = []
+    # S5: 3-candle pivots (relaxed from 5-candle)
+    price_lows = []; price_highs = []
+    rsi_at_lows = []; rsi_at_highs = []
+    idx_lows = []; idx_highs = []
 
-    for i in range(2, len(prices) - 2):
-        if prices[i] < prices[i-1] and prices[i] < prices[i-2] and prices[i] < prices[i+1] and prices[i] < prices[i+2]:
+    for i in range(1, len(prices) - 1):
+        if prices[i] < prices[i-1] and prices[i] < prices[i+1]:
             price_lows.append(prices[i])
             rsi_at_lows.append(rsi_vals[i])
-        if prices[i] > prices[i-1] and prices[i] > prices[i-2] and prices[i] > prices[i+1] and prices[i] > prices[i+2]:
+            idx_lows.append(i)
+        if prices[i] > prices[i-1] and prices[i] > prices[i+1]:
             price_highs.append(prices[i])
             rsi_at_highs.append(rsi_vals[i])
+            idx_highs.append(i)
 
-    # Bullish divergence: Price LL + RSI HL
-    if len(price_lows) >= 2 and len(rsi_at_lows) >= 2:
-        if price_lows[-1] < price_lows[-2] and rsi_at_lows[-1] > rsi_at_lows[-2]:
+    # Min distance between pivots: at least 3 candles apart to avoid noise
+    def valid_pair(idx_list, j):
+        return len(idx_list) >= 2 and (idx_list[j] - idx_list[j-1]) >= 3
+
+    # Bullish divergence: Price LL + RSI HL (min 1% price drop)
+    if len(price_lows) >= 2 and valid_pair(idx_lows, -1):
+        price_drop = (price_lows[-2] - price_lows[-1]) / price_lows[-2]
+        if price_lows[-1] < price_lows[-2] and price_drop > 0.01 and rsi_at_lows[-1] > rsi_at_lows[-2]:
             return {"divergence": "BULLISH", "div_type": "REGULAR"}
 
-    # Bearish divergence: Price HH + RSI LH
-    if len(price_highs) >= 2 and len(rsi_at_highs) >= 2:
-        if price_highs[-1] > price_highs[-2] and rsi_at_highs[-1] < rsi_at_highs[-2]:
+    # Bearish divergence: Price HH + RSI LH (min 1% price rise)
+    if len(price_highs) >= 2 and valid_pair(idx_highs, -1):
+        price_rise = (price_highs[-1] - price_highs[-2]) / price_highs[-2]
+        if price_highs[-1] > price_highs[-2] and price_rise > 0.01 and rsi_at_highs[-1] < rsi_at_highs[-2]:
             return {"divergence": "BEARISH", "div_type": "REGULAR"}
 
     # Hidden bullish: Price HL + RSI LL
-    if len(price_lows) >= 2 and len(rsi_at_lows) >= 2:
+    if len(price_lows) >= 2 and valid_pair(idx_lows, -1):
         if price_lows[-1] > price_lows[-2] and rsi_at_lows[-1] < rsi_at_lows[-2]:
             return {"divergence": "BULLISH", "div_type": "HIDDEN"}
 
     # Hidden bearish: Price LH + RSI HH
-    if len(price_highs) >= 2 and len(rsi_at_highs) >= 2:
+    if len(price_highs) >= 2 and valid_pair(idx_highs, -1):
         if price_highs[-1] < price_highs[-2] and rsi_at_highs[-1] > rsi_at_highs[-2]:
             return {"divergence": "BEARISH", "div_type": "HIDDEN"}
 
@@ -383,16 +403,29 @@ def compute_individual_scores(
     reasons["rsi_1d"] = r
 
     # --- MACD (max ±20) ---
-    md = macd_data or {"trend": "NEUTRAL", "histogram": 0, "histogram_pct": 0}
+    md = macd_data or {"trend": "NEUTRAL", "histogram": 0, "histogram_pct": 0, "hist_direction": "FLAT"}
     s = 0; r = ""
     hist_pct = md.get("histogram_pct", 0)
+    hist_dir = md.get("hist_direction", "FLAT")
     if md["trend"] == "BULLISH":
-        # Base 15 for direction + up to 5 bonus for histogram strength
         s = 15 + min(5, int(abs(hist_pct) * 10))
-        r = f"MACD bullish (Hist: {hist_pct:+.2f}%)"
+        # S3: Penalize shrinking histogram (momentum fading)
+        if hist_dir == "SHRINKING":
+            s = max(5, s - 6)
+            r = f"MACD bullish aber schwächer werdend (Hist: {hist_pct:+.2f}%)"
+        elif hist_dir == "GROWING":
+            r = f"MACD bullish + steigend (Hist: {hist_pct:+.2f}%)"
+        else:
+            r = f"MACD bullish (Hist: {hist_pct:+.2f}%)"
     elif md["trend"] == "BEARISH":
         s = -(15 + min(5, int(abs(hist_pct) * 10)))
-        r = f"MACD bearish (Hist: {hist_pct:+.2f}%)"
+        if hist_dir == "SHRINKING":
+            s = min(-5, s + 6)  # Less negative = momentum fading
+            r = f"MACD bearish aber abschwächend (Hist: {hist_pct:+.2f}%)"
+        elif hist_dir == "GROWING":
+            r = f"MACD bearish + fallend (Hist: {hist_pct:+.2f}%)"
+        else:
+            r = f"MACD bearish (Hist: {hist_pct:+.2f}%)"
     scores["macd"] = max(-20, min(20, s))
     reasons["macd"] = r
 
@@ -871,19 +904,55 @@ def calculate_price_range(df: pd.DataFrame) -> dict:
 
 
 def multi_tf_rsi_summary(rsi_values: dict) -> dict:
+    """
+    Multi-TF RSI confluence with conflict detection (S6).
+    Detects specific patterns:
+    - BOUNCE_DOWN: short TFs oversold + long TFs overbought → bounce in downtrend
+    - PULLBACK_UP: short TFs overbought + long TFs oversold → pullback in uptrend
+    """
     bullish = 0; bearish = 0; total = 0
+    short_tf_bull = 0; short_tf_bear = 0  # 1h, 4h
+    long_tf_bull = 0; long_tf_bear = 0    # 1D, 1W
+    tf_order = ["1h", "4h", "1D", "1W"]
+
     for tf, val in rsi_values.items():
         if val is None: continue
         total += 1
-        if val <= 42: bullish += 1
-        elif val >= 58: bearish += 1
-    if total == 0: return {"confluence": "N/A", "bullish_count": 0, "bearish_count": 0, "total": 0}
+        is_short = tf in ("1h", "4h")
+        if val <= 42:
+            bullish += 1
+            if is_short: short_tf_bull += 1
+            else: long_tf_bull += 1
+        elif val >= 58:
+            bearish += 1
+            if is_short: short_tf_bear += 1
+            else: long_tf_bear += 1
+
+    if total == 0:
+        return {"confluence": "N/A", "bullish_count": 0, "bearish_count": 0, "total": 0, "conflict": None}
+
+    # S6: Conflict detection
+    conflict = None
+    if short_tf_bull >= 1 and long_tf_bear >= 1:
+        # Short TFs oversold + Long TFs overbought → bounce in downtrend (risky long)
+        conflict = "BOUNCE_DOWN"
+    elif short_tf_bear >= 1 and long_tf_bull >= 1:
+        # Short TFs overbought + Long TFs oversold → pullback in uptrend (dip buy opportunity)
+        conflict = "PULLBACK_UP"
+
     if bullish >= total * 0.75: conf = "STRONG_BUY"
-    elif bullish > bearish: conf = "LEAN_BUY"
+    elif bullish > bearish and not conflict: conf = "LEAN_BUY"
+    elif bullish > bearish and conflict == "BOUNCE_DOWN": conf = "BOUNCE_BUY"
     elif bearish >= total * 0.75: conf = "STRONG_SELL"
-    elif bearish > bullish: conf = "LEAN_SELL"
+    elif bearish > bullish and not conflict: conf = "LEAN_SELL"
+    elif bearish > bullish and conflict == "PULLBACK_UP": conf = "PULLBACK_SELL"
+    elif conflict: conf = "CONFLICTING"
     else: conf = "NEUTRAL"
-    return {"confluence": conf, "bullish_count": bullish, "bearish_count": bearish, "total": total}
+
+    return {
+        "confluence": conf, "bullish_count": bullish, "bearish_count": bearish,
+        "total": total, "conflict": conflict,
+    }
 
 
 # ============================================================
@@ -907,7 +976,7 @@ def detect_nr_pattern(df: pd.DataFrame) -> dict:
         "nr4": False, "nr7": False, "nr10": False,
         "nr_level": None, "range_ratio": 1.0,
         "box_high": 0, "box_low": 0, "box_mid": 0,
-        "breakout": None, "breakout_strength": 0,
+        "breakout": None, "breakout_confirmed": False, "breakout_strength": 0,
     }
 
     if df.empty or len(df) < 12:
@@ -959,7 +1028,7 @@ def detect_nr_pattern(df: pd.DataFrame) -> dict:
         result["box_low"] = float(lows[-2])
         result["box_mid"] = float((highs[-2] + lows[-2]) / 2)
 
-        # Breakout detection: has current candle broken out of the box?
+        # Breakout detection on CURRENT (running) candle — unconfirmed
         current_close = closes[-1]
         box_h = result["box_high"]
         box_l = result["box_low"]
@@ -967,10 +1036,48 @@ def detect_nr_pattern(df: pd.DataFrame) -> dict:
 
         if current_close > box_h:
             result["breakout"] = "UP"
+            result["breakout_confirmed"] = False  # S4: running candle, may reverse
             result["breakout_strength"] = round((current_close - box_h) / box_range * 100, 1) if box_range > 0 else 0
         elif current_close < box_l:
             result["breakout"] = "DOWN"
+            result["breakout_confirmed"] = False
             result["breakout_strength"] = round((box_l - current_close) / box_range * 100, 1) if box_range > 0 else 0
+
+    # S4: Check for CONFIRMED breakout from previous NR (ranges[-3] was NR, closes[-2] broke out)
+    # This means the breakout candle has already closed — confirmed signal.
+    if len(ranges) >= 12 and not result.get("breakout"):
+        prev2_range = ranges[-3]
+        # Was ranges[-3] an NR candle?
+        is_nr_prev = False
+        if len(ranges) >= 6:
+            is_nr_prev = prev2_range <= np.min(ranges[-6:-2])  # NR4 on the candle before
+        if len(ranges) >= 9:
+            is_nr_prev = is_nr_prev or prev2_range <= np.min(ranges[-9:-2])  # NR7
+        if len(ranges) >= 12:
+            is_nr_prev = is_nr_prev or prev2_range <= np.min(ranges[-12:-2])  # NR10
+
+        if is_nr_prev:
+            prev_box_h = float(highs[-3])
+            prev_box_l = float(lows[-3])
+            closed_candle = closes[-2]  # This candle is CLOSED — confirmed
+            if closed_candle > prev_box_h:
+                result["breakout"] = "UP"
+                result["breakout_confirmed"] = True
+                bx_r = prev_box_h - prev_box_l
+                result["breakout_strength"] = round((closed_candle - prev_box_h) / bx_r * 100, 1) if bx_r > 0 else 0
+                if not result["nr_level"]:  # Set box from previous NR if no current NR
+                    result["box_high"] = prev_box_h
+                    result["box_low"] = prev_box_l
+                    result["box_mid"] = float((prev_box_h + prev_box_l) / 2)
+            elif closed_candle < prev_box_l:
+                result["breakout"] = "DOWN"
+                result["breakout_confirmed"] = True
+                bx_r = prev_box_h - prev_box_l
+                result["breakout_strength"] = round((prev_box_l - closed_candle) / bx_r * 100, 1) if bx_r > 0 else 0
+                if not result["nr_level"]:
+                    result["box_high"] = prev_box_h
+                    result["box_low"] = prev_box_l
+                    result["box_mid"] = float((prev_box_h + prev_box_l) / 2)
 
     # Range ratio: how compressed is the current range vs recent average?
     avg_range = np.mean(ranges[-10:]) if len(ranges) >= 10 else np.mean(ranges)
@@ -1017,13 +1124,16 @@ def nr_confluence_score(nr_data: dict, rsi_4h: float) -> tuple:
         score = 0
         reason = f"{nr_level} aktiv — Ausbruch steht bevor, Richtung offen"
 
-    # Bonus if breakout already confirmed
+    # Bonus if breakout detected
+    confirmed = nr_data.get("breakout_confirmed", False)
     if breakout == "UP" and score >= 0:
-        score = min(score + 4, 18)
-        reason += " ✅ Breakout UP bestätigt"
+        bonus = 4 if confirmed else 2  # S4: confirmed gets full bonus
+        score = min(score + bonus, 18)
+        reason += " ✅ Breakout UP bestätigt" if confirmed else " ⏳ Breakout UP (unbestätigt)"
     elif breakout == "DOWN" and score <= 0:
-        score = max(score - 4, -18)
-        reason += " ✅ Breakout DOWN bestätigt"
+        bonus = 4 if confirmed else 2
+        score = max(score - bonus, -18)
+        reason += " ✅ Breakout DOWN bestätigt" if confirmed else " ⏳ Breakout DOWN (unbestätigt)"
 
     return max(-18, min(18, score)), reason
 
