@@ -26,7 +26,11 @@ TIMEFRAMES = {
 }
 
 # Number of candles to fetch
-KLINE_LIMIT = 100
+# 250 needed: EMA-200 requires ~200+ candles to converge properly,
+# plus buffer for MACD warmup and indicator lookback periods.
+# This ensures Detail tab EMA 50/200 crosses and Golden/Death Cross
+# detection are accurate. Scan indicators (RSI, MACD, OBV) only need ~50.
+KLINE_LIMIT = 250
 
 # ============================================================
 # MACD SETTINGS
