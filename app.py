@@ -179,7 +179,7 @@ CONFLUENCE_FILTERS = {
     "rsi_divergence": {"label": "🔀 RSI Divergenz",    "default": True,  "weight": 15, "desc": "Preis-RSI Divergenzen (Regular + Hidden)"},
     "smart_money":    {"label": "🏦 Smart Money",      "default": False, "weight": 15, "desc": "Order Blocks + Market Structure (BOS/CHoCH)"},
     "ema_alignment":  {"label": "📐 EMA Alignment",    "default": True,  "weight": 12, "desc": "Preis vs EMA 9/21/50 Ausrichtung"},
-    "stoch_rsi":      {"label": "🎛️ Stoch RSI",        "default": True,  "weight": 12, "desc": "Feintuning K/D Crossover"},
+    "stoch_rsi":      {"label": "🎛️ Stoch RSI",        "default": True,  "weight": 15, "desc": "Feintuning K/D Crossover"},
     "bollinger":      {"label": "📏 Bollinger Bands",   "default": False, "weight": 10, "desc": "Squeeze-Erkennung + Band-Position"},
     "funding_rate":   {"label": "💰 Funding Rate",     "default": False, "weight": 10, "desc": "Futures Funding Rate (konträr)"},
     "fear_greed":     {"label": "😱 Fear & Greed",     "default": False, "weight": 8,  "desc": "Markt-Sentiment (konträr)"},
@@ -309,14 +309,33 @@ def scan_all(coins, tfs, smc=False):
             sk=calculate_stoch_rsi(kld[ptf]); r["stoch_rsi_k"]=sk["stoch_rsi_k"]; r["stoch_rsi_d"]=sk["stoch_rsi_d"]
             # NR4/NR7/NR10 detection (uses 4h klines, no extra API call)
             nr=detect_nr_pattern(kld[ptf]); r["nr_level"]=nr.get("nr_level",""); r["nr_breakout"]=nr.get("breakout",""); r["nr_range_ratio"]=nr.get("range_ratio",1.0); r["nr_box_high"]=nr.get("box_high",0); r["nr_box_low"]=nr.get("box_low",0)
+            # EMA alignment + RSI divergence (cheap CPU, no API calls)
+            ema_scan=calculate_ema_alignment_fast(kld[ptf])
+            r["ema_trend"]=ema_scan.get("ema_trend","NEUTRAL"); r["ema_bull_count"]=ema_scan.get("ema_bull_count",0); r["ema_bear_count"]=ema_scan.get("ema_bear_count",0)
+            div_scan=detect_rsi_divergence(kld[ptf])
+            r["divergence"]=div_scan.get("divergence","NONE"); r["div_type"]=div_scan.get("div_type","NONE")
             if smc:
                 ob=detect_order_blocks(kld[ptf]); fv=detect_fair_value_gaps(kld[ptf]); ms=detect_market_structure(kld[ptf])
                 r["ob_signal"]=ob["ob_signal"]; r["fvg_signal"]=fv["fvg_signal"]; r["market_structure"]=ms["structure"]; r["bos"]=ms["break_of_structure"]
             sc_d={"ob_signal":r.get("ob_signal","NONE"),"fvg_signal":r.get("fvg_signal","BALANCED"),"structure":r.get("market_structure","UNKNOWN")} if smc else None
-            cf=generate_confluence_signal(rsi_4h=r.get("rsi_4h",50),rsi_1d=r.get("rsi_1D",50),macd_data=md,volume_data=vd,smc_data=sc_d)
+            # NR data dict for scoring
+            nr_d={"nr_level":r["nr_level"],"breakout":r["nr_breakout"],"range_ratio":r["nr_range_ratio"]} if r["nr_level"] else None
+            # FULL scoring — same function used everywhere (Bug 1 fix)
+            individual=compute_individual_scores(
+                rsi_4h=r.get("rsi_4h",50), rsi_1d=r.get("rsi_1D",50),
+                macd_data=md, volume_data=vd, stoch_rsi_data=sk,
+                smc_data=sc_d, ema_data=ema_scan, divergence_data=div_scan,
+                nr_data=nr_d,
+            )
+            # Default scan filters: everything we compute at scan time
+            scan_filters={"rsi_4h":True,"rsi_1d":True,"macd":True,"volume_obv":True,
+                         "stoch_rsi":True,"ema_alignment":True,"rsi_divergence":True,
+                         "nr_breakout":True,"smart_money":smc,
+                         "bollinger":False,"funding_rate":False,"fear_greed":False}
+            cf=compute_confluence_total(individual, scan_filters)
             r["score"]=cf["score"]; r["confluence_rec"]=cf["recommendation"]; r["reasons"]=" | ".join(cf["reasons"][:3])
         else:
-            r.update({"macd_trend":"NEUTRAL","macd_histogram":0,"macd_histogram_pct":0,"vol_trend":"—","vol_ratio":1.0,"obv_trend":"—","stoch_rsi_k":50.0,"stoch_rsi_d":50.0,"nr_level":"","nr_breakout":"","nr_range_ratio":1.0,"nr_box_high":0,"nr_box_low":0,"score":0,"confluence_rec":"WAIT","reasons":""})
+            r.update({"macd_trend":"NEUTRAL","macd_histogram":0,"macd_histogram_pct":0,"vol_trend":"—","vol_ratio":1.0,"obv_trend":"—","stoch_rsi_k":50.0,"stoch_rsi_d":50.0,"nr_level":"","nr_breakout":"","nr_range_ratio":1.0,"nr_box_high":0,"nr_box_low":0,"ema_trend":"NEUTRAL","ema_bull_count":0,"ema_bear_count":0,"divergence":"NONE","div_type":"NONE","score":0,"confluence_rec":"WAIT","reasons":""})
         results.append(r)
     return pd.DataFrame(results) if results else pd.DataFrame()
 
@@ -731,7 +750,7 @@ with tab_conf:
     with st.expander("ℹ️ Was ist der Confluence Scanner?"):
         st.markdown("""**Der Confluence Scanner** bewertet jeden Coin anhand **mehrerer unabhängiger Indikatoren** und berechnet einen normalisierten Score von -100 bis +100.
 
-**Die 7 Standard-Filter (vorausgewählt):** RSI 4h (±30), RSI 1D (±20), MACD (±20), Volume & OBV (±15), RSI Divergenz (±15), EMA Alignment (±12), Stoch RSI (±12), NR Breakout (±18)
+**Die 7 Standard-Filter (vorausgewählt):** RSI 4h (±30), RSI 1D (±20), MACD (±20), NR Breakout (±18), Volume & OBV (±15), Stoch RSI (±15), RSI Divergenz (±15), EMA Alignment (±12)
 
 **Zusätzliche Filter (optional):** Smart Money (±15), Bollinger Bands (±10), Funding Rate (±10), Fear & Greed (±8)
 
@@ -743,7 +762,8 @@ with tab_conf:
     # Uses the SAME compute_individual_scores() as scan_all for consistency.
     # Extra indicators (EMA, Divergence, BB, SMC) are computed here on-demand.
     active_filters = st.session_state.get("conf_filters", {k: v["default"] for k, v in CONFLUENCE_FILTERS.items()})
-    needs_extra = any(active_filters.get(k, False) for k in ["smart_money", "ema_alignment", "rsi_divergence", "bollinger"])
+    # Only need extra klines fetch for indicators NOT computed in scan_all
+    needs_extra = any(active_filters.get(k, False) for k in ["smart_money", "bollinger"])
 
     # Lazy-load funding rates only if filter is active
     funding_rates_map = {}
@@ -774,8 +794,13 @@ with tab_conf:
             "stoch_rsi_d": row.get("stoch_rsi_d", 50.0),
         }
 
-        # On-demand extra indicators
-        smc_data = None; ema_data = None; div_data = None; bb_data = None
+        # On-demand extra indicators (only what scan_all doesn't compute)
+        smc_data = None; bb_data = None
+        # EMA and Divergence: use scan_all cached results (Bug 1 fix)
+        ema_data = {"ema_trend": row.get("ema_trend", "NEUTRAL"),
+                    "ema_bull_count": int(row.get("ema_bull_count", 0)),
+                    "ema_bear_count": int(row.get("ema_bear_count", 0))}
+        div_data = {"divergence": row.get("divergence", "NONE"), "div_type": row.get("div_type", "NONE")}
         if needs_extra:
             kl_4h = fetch_klines_smart(sym, "4h")
             if not kl_4h.empty and len(kl_4h) >= 15:
@@ -784,10 +809,6 @@ with tab_conf:
                     smc_data = {"ob_signal": ob.get("ob_signal", "NONE"),
                                 "fvg_signal": "BALANCED",
                                 "structure": ms.get("structure", "UNKNOWN")}
-                if active_filters.get("ema_alignment", False):
-                    ema_data = calculate_ema_alignment_fast(kl_4h)
-                if active_filters.get("rsi_divergence", False):
-                    div_data = detect_rsi_divergence(kl_4h)
                 if active_filters.get("bollinger", False):
                     bb_data = calculate_bb_squeeze(kl_4h)
 
