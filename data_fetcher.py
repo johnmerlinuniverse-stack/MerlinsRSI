@@ -249,8 +249,8 @@ def get_coingecko_ohlc(symbol: str, days: int = 7) -> pd.DataFrame:
         for col in ["open", "high", "low", "close"]:
             df[col] = df[col].astype(float)
 
-        df["volume"] = (df["high"] - df["low"]) / df["close"] * 1e6
-        df["quote_volume"] = df["volume"] * df["close"]
+        df["volume"] = 0.0  # CoinGecko OHLC has no real volume — set to 0 so volume indicators return NEUTRAL
+        df["quote_volume"] = 0.0
         df["trades"] = 0
 
         return df[["open_time", "open", "high", "low", "close", "volume", "quote_volume", "trades"]]
