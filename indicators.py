@@ -87,13 +87,17 @@ def calculate_macd(df: pd.DataFrame) -> dict:
 # ============================================================
 
 def calculate_volume_analysis(df: pd.DataFrame) -> dict:
-    if df.empty or len(df) < 22:
+    if df.empty or len(df) < 23:
         return {"vol_trend": "NEUTRAL", "vol_ratio": 1.0, "obv_trend": "NEUTRAL"}
-    # Use second-to-last candle (-2) because the current candle (-1) is still forming
-    # and would always show artificially low volume
-    vol_avg = df["volume"].iloc[:-1].rolling(20).mean().iloc[-1]
+    # Use second-to-last candle (-2) because the current candle (-1) is still forming.
+    # Average excludes BOTH the running candle (-1) AND the measured candle (-2)
+    # so the measured candle doesn't dampen its own spike detection.
+    vol_avg = df["volume"].iloc[:-2].rolling(20).mean().iloc[-1]
     vol_completed = df["volume"].iloc[-2]
-    vol_ratio = round(vol_completed / vol_avg, 2) if vol_avg > 0 else 1.0
+    # Guard: if volume data is missing/zero (e.g. CoinGecko fallback), return NEUTRAL
+    if vol_avg <= 0 or vol_completed <= 0:
+        return {"vol_trend": "NEUTRAL", "vol_ratio": 1.0, "obv_trend": "NEUTRAL"}
+    vol_ratio = round(vol_completed / vol_avg, 2)
     if vol_ratio > 1.5: vol_trend = "HIGH"
     elif vol_ratio > 1.0: vol_trend = "ABOVE_AVG"
     elif vol_ratio > 0.5: vol_trend = "BELOW_AVG"
@@ -362,10 +366,14 @@ def compute_individual_scores(
         s = 20; r = f"RSI 1D stark überverkauft ({rsi_1d:.1f})"
     elif rsi_1d <= RSI_OVERSOLD:
         s = 15; r = f"RSI 1D überverkauft ({rsi_1d:.1f})"
+    elif rsi_1d <= 42:
+        s = 8; r = f"RSI 1D Richtung überverkauft ({rsi_1d:.1f})"
     elif rsi_1d >= RSI_STRONG_OVERBOUGHT:
         s = -20; r = f"RSI 1D stark überkauft ({rsi_1d:.1f})"
     elif rsi_1d >= RSI_OVERBOUGHT:
         s = -15; r = f"RSI 1D überkauft ({rsi_1d:.1f})"
+    elif rsi_1d >= 60:
+        s = -8; r = f"RSI 1D Richtung überkauft ({rsi_1d:.1f})"
     scores["rsi_1d"] = s
     reasons["rsi_1d"] = r
 
@@ -397,7 +405,7 @@ def compute_individual_scores(
     scores["volume_obv"] = s
     reasons["volume_obv"] = r
 
-    # --- Stoch RSI (max ±12) ---
+    # --- Stoch RSI (max ±15) --- (was ±12, raised to allow K/D crossover bonus)
     sk = stoch_rsi_data or {"stoch_rsi_k": 50.0, "stoch_rsi_d": 50.0}
     s = 0; r = ""
     k_val = sk["stoch_rsi_k"]
@@ -410,11 +418,11 @@ def compute_individual_scores(
         s = -12; r = f"Stoch RSI extrem überkauft ({k_val:.0f})"
     elif k_val > 75:
         s = -8; r = f"Stoch RSI überkauft ({k_val:.0f})"
-    # K/D crossover bonus
+    # K/D crossover bonus — now actually contributes (cap raised to ±15)
     if k_val < 30 and k_val > d_val:
-        s = min(s + 3, 12); r += " + K>D Cross"
+        s = min(s + 3, 15); r += " + K>D Cross"
     elif k_val > 70 and k_val < d_val:
-        s = max(s - 3, -12); r += " + K<D Cross"
+        s = max(s - 3, -15); r += " + K<D Cross"
     scores["stoch_rsi"] = s
     reasons["stoch_rsi"] = r
 
@@ -521,7 +529,7 @@ def compute_individual_scores(
     # Max possible score per factor (for normalization)
     max_weights = {
         "rsi_4h": 30, "rsi_1d": 20, "macd": 20, "volume_obv": 15,
-        "stoch_rsi": 12, "smart_money": 15, "ema_alignment": 12,
+        "stoch_rsi": 15, "smart_money": 15, "ema_alignment": 12,
         "rsi_divergence": 15, "bollinger": 10, "funding_rate": 10,
         "fear_greed": 8, "nr_breakout": 18,
     }
