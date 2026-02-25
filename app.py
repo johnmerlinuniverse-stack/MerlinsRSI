@@ -22,7 +22,7 @@ from indicators import (
     detect_order_blocks, detect_fair_value_gaps, detect_market_structure,
     generate_confluence_signal, calculate_stoch_rsi,
     calculate_ema_alignment_fast, detect_rsi_divergence, calculate_bb_squeeze,
-    compute_individual_scores, compute_confluence_total,
+    compute_individual_scores, compute_confluence_total, compute_alert_priority,
     detect_nr_pattern, nr_confluence_score, generate_nr_chart,
 )
 from alerts import check_and_send_alerts
@@ -37,12 +37,47 @@ from alerts import check_and_send_alerts
 # TF weights for multi-TF scoring
 SIG_TF_WEIGHTS = {"1h": 1.0, "4h": 3.0, "1D": 2.0, "1W": 1.5}
 
-def compute_signal_base(rsi_4h, rsi_4h_prev, rsi_1d):
+# CTB/CTS cooldown: prevents same cross signal from firing repeatedly
+# when RSI oscillates around the 40/60 boundary.
+# Key: "symbol:signal" → timestamp of last fire.
+CTB_CTS_COOLDOWN_SECONDS = 12 * 3600  # 12 hours
+
+if "_ctb_cts_cooldown" not in st.session_state:
+    st.session_state["_ctb_cts_cooldown"] = {}
+
+def _check_cross_cooldown(symbol: str, signal: str) -> bool:
+    """Returns True if this cross signal is allowed (not in cooldown)."""
+    key = f"{symbol}:{signal}"
+    cd = st.session_state["_ctb_cts_cooldown"]
+    last_fire = cd.get(key, 0)
+    now = time.time()
+    if now - last_fire < CTB_CTS_COOLDOWN_SECONDS:
+        return False  # Still in cooldown
+    return True
+
+def _record_cross_signal(symbol: str, signal: str):
+    """Record that this cross signal just fired."""
+    key = f"{symbol}:{signal}"
+    st.session_state["_ctb_cts_cooldown"][key] = time.time()
+    # Cleanup old entries (>24h)
+    now = time.time()
+    cd = st.session_state["_ctb_cts_cooldown"]
+    st.session_state["_ctb_cts_cooldown"] = {
+        k: v for k, v in cd.items() if now - v < 24 * 3600
+    }
+
+def compute_signal_base(rsi_4h, rsi_4h_prev, rsi_1d, symbol=""):
     """Original CryptoWaves-compatible 4h signal (always computed)."""
     if rsi_4h_prev < 40 and rsi_4h >= 40 and rsi_1d >= 35:
-        return "CTB"
+        if symbol and _check_cross_cooldown(symbol, "CTB"):
+            _record_cross_signal(symbol, "CTB")
+            return "CTB"
+        return "BUY"  # Cooldown active → downgrade to BUY
     if rsi_4h_prev > 60 and rsi_4h <= 60 and rsi_1d <= 65:
-        return "CTS"
+        if symbol and _check_cross_cooldown(symbol, "CTS"):
+            _record_cross_signal(symbol, "CTS")
+            return "CTS"
+        return "SELL"  # Cooldown active → downgrade to SELL
     if rsi_4h <= 42:
         return "BUY"
     if rsi_4h >= 58:
@@ -55,10 +90,12 @@ def compute_signal_multi_tf(row, active_sig_tfs):
     Each TF votes BUY/SELL with its weight.
     If only 4H is active → identical to CryptoWaves logic.
     """
+    sym = row.get("symbol", "")
+
     # If only 4h selected → original CryptoWaves logic
     if active_sig_tfs == {"4h"}:
         return compute_signal_base(
-            row.get("rsi_4h", 50), row.get("rsi_prev_4h", 50), row.get("rsi_1D", 50))
+            row.get("rsi_4h", 50), row.get("rsi_prev_4h", 50), row.get("rsi_1D", 50), sym)
 
     bull = 0.0; bear = 0.0
     for tf in active_sig_tfs:
@@ -71,15 +108,21 @@ def compute_signal_multi_tf(row, active_sig_tfs):
         elif rsi >= 75: bear += w * 2.0  # strongly overbought
         elif rsi >= 58: bear += w * 1.0  # overbought
 
-    # CTB/CTS cross detection (only from 4h)
+    # CTB/CTS cross detection (only from 4h) — with cooldown
     if "4h" in active_sig_tfs:
         rsi_4h = row.get("rsi_4h", 50)
         rsi_4h_prev = row.get("rsi_prev_4h", 50)
         rsi_1d = row.get("rsi_1D", 50)
         if rsi_4h_prev < 40 and rsi_4h >= 40 and rsi_1d >= 35 and bull >= bear:
-            return "CTB"
+            if _check_cross_cooldown(sym, "CTB"):
+                _record_cross_signal(sym, "CTB")
+                return "CTB"
+            return "BUY"
         if rsi_4h_prev > 60 and rsi_4h <= 60 and rsi_1d <= 65 and bear >= bull:
-            return "CTS"
+            if _check_cross_cooldown(sym, "CTS"):
+                _record_cross_signal(sym, "CTS")
+                return "CTS"
+            return "SELL"
 
     # Net score determines signal
     net = bull - bear
@@ -300,12 +343,12 @@ def scan_all(coins, tfs, smc=False):
                 else: r[f"rsi_{tf}"],r[f"rsi_prev_{tf}"]=50.0,50.0
                 r[f"closes_{tf}"]=json.dumps([round(c,6) for c in df_k["close"].tail(20).tolist()])
             else: r[f"rsi_{tf}"],r[f"rsi_prev_{tf}"]=50.0,50.0; r[f"closes_{tf}"]="[]"
-        r["signal"]=compute_signal_base(r.get("rsi_4h",50),r.get("rsi_prev_4h",50),r.get("rsi_1D",50))
+        r["signal"]=compute_signal_base(r.get("rsi_4h",50),r.get("rsi_prev_4h",50),r.get("rsi_1D",50),sym)
         r["border_alpha"]=border_alpha(r.get("rsi_4h",50),r["signal"])
         ptf="4h" if "4h" in kld else (list(tfs)[0] if tfs else None)
         if ptf and ptf in kld:
             md=calculate_macd(kld[ptf]); r["macd_trend"]=md["trend"]; r["macd_histogram"]=md["histogram"]; r["macd_histogram_pct"]=md.get("histogram_pct",0)
-            vd=calculate_volume_analysis(kld[ptf]); r["vol_trend"]=vd["vol_trend"]; r["vol_ratio"]=vd["vol_ratio"]; r["obv_trend"]=vd["obv_trend"]
+            vd=calculate_volume_analysis(kld[ptf]); r["vol_trend"]=vd["vol_trend"]; r["vol_ratio"]=vd["vol_ratio"]; r["obv_trend"]=vd["obv_trend"]; r["candle_dir"]=vd.get("candle_dir","NEUTRAL")
             sk=calculate_stoch_rsi(kld[ptf]); r["stoch_rsi_k"]=sk["stoch_rsi_k"]; r["stoch_rsi_d"]=sk["stoch_rsi_d"]
             # NR4/NR7/NR10 detection (uses 4h klines, no extra API call)
             nr=detect_nr_pattern(kld[ptf]); r["nr_level"]=nr.get("nr_level",""); r["nr_breakout"]=nr.get("breakout",""); r["nr_range_ratio"]=nr.get("range_ratio",1.0); r["nr_box_high"]=nr.get("box_high",0); r["nr_box_low"]=nr.get("box_low",0)
@@ -334,8 +377,11 @@ def scan_all(coins, tfs, smc=False):
                          "bollinger":False,"funding_rate":False,"fear_greed":False}
             cf=compute_confluence_total(individual, scan_filters)
             r["score"]=cf["score"]; r["confluence_rec"]=cf["recommendation"]; r["reasons"]=" | ".join(cf["reasons"][:3])
+            # Alert priority: how many indicators align in signal direction
+            pri=compute_alert_priority(individual, r["signal"])
+            r["priority"]=pri["priority"]; r["priority_label"]=pri["label"]; r["priority_aligned"]=pri["aligned"]; r["priority_special"]=" ".join(pri["special"])
         else:
-            r.update({"macd_trend":"NEUTRAL","macd_histogram":0,"macd_histogram_pct":0,"vol_trend":"—","vol_ratio":1.0,"obv_trend":"—","stoch_rsi_k":50.0,"stoch_rsi_d":50.0,"nr_level":"","nr_breakout":"","nr_range_ratio":1.0,"nr_box_high":0,"nr_box_low":0,"ema_trend":"NEUTRAL","ema_bull_count":0,"ema_bear_count":0,"divergence":"NONE","div_type":"NONE","score":0,"confluence_rec":"WAIT","reasons":""})
+            r.update({"macd_trend":"NEUTRAL","macd_histogram":0,"macd_histogram_pct":0,"vol_trend":"—","vol_ratio":1.0,"obv_trend":"—","candle_dir":"NEUTRAL","stoch_rsi_k":50.0,"stoch_rsi_d":50.0,"nr_level":"","nr_breakout":"","nr_range_ratio":1.0,"nr_box_high":0,"nr_box_low":0,"ema_trend":"NEUTRAL","ema_bull_count":0,"ema_bear_count":0,"divergence":"NONE","div_type":"NONE","score":0,"confluence_rec":"WAIT","reasons":"","priority":0,"priority_label":"","priority_aligned":0,"priority_special":""})
         results.append(r)
     return pd.DataFrame(results) if results else pd.DataFrame()
 
@@ -502,13 +548,24 @@ def crow_html(row, charts=True):
         nr_badge = f'<span style="background:{nr_c};color:#000;font-size:10px;font-weight:bold;padding:1px 5px;border-radius:8px;margin-left:4px;">{nr_lv}{nr_bo_txt}</span>'
     else:
         nr_badge = ""
+    # Priority badge (🔥🔥🔥 = extreme, 🔥🔥 = strong, 🔥 = moderate)
+    pri_label = row.get("priority_label", "")
+    pri_aligned = row.get("priority_aligned", 0)
+    pri_special = row.get("priority_special", "")
+    if pri_label:
+        pri_title = f"{pri_aligned} Indikatoren aligned"
+        if pri_special:
+            pri_title += f" + {pri_special}"
+        pri_badge = f'<span title="{pri_title}" style="margin-left:4px;font-size:11px;">{pri_label}</span>'
+    else:
+        pri_badge = ""
     return f'''<div class="crow" style="{bdr}">
 <div class="ic">{icon(im, sym)}</div>
 <div class="inf"><div><span class="cn">{sym}</span><span class="cf">{nm}</span><span class="cr">{rks}</span></div>
 <div class="pl">Price: <b style="color:white;">{fp(row["price"])}</b></div>
 <div class="chs">Ch%: <span class="{cc(c1h)}">{c1h:+.2f}%</span> <span class="{cc(c24)}">{c24:+.2f}%</span> <span class="{cc(c7)}" style="font-weight:bold;">{c7:+.2f}%</span> <span class="{cc(c30)}">{c30:+.2f}%</span></div></div>
 {ch}
-<div class="sig"><span style="font-size:11px;color:#888;">RSI:</span> <span class="sl" style="color:{sc};{glow}">{sig}</span>{nr_badge}
+<div class="sig"><span style="font-size:11px;color:#888;">RSI:</span> <span class="sl" style="color:{sc};{glow}">{sig}</span>{pri_badge}{nr_badge}
 <div class="rsi-row"><span class="rsi-pill">1h: <b style="color:{rsc(r1h)};">{r1h:.1f}</b></span><span class="rsi-pill" style="background:#252550;"><b style="color:{rsc(r4)};">{r4:.1f}</b> 4h</span><span class="rsi-pill" style="background:#252550;"><b style="color:{rsc(r1d)};">{r1d:.1f}</b> 1D</span><span class="rsi-pill">1W: <b style="color:{rsc(r1w)};">{r1w:.1f}</b></span></div>
 <div style="margin-top:2px;">Conf: {conf_html}</div>
 </div></div>'''
@@ -595,7 +652,7 @@ with tab_alerts:
     ct,cf,cs=st.columns([2,1,1])
     with ct: st.markdown("### 🚨 24h Alerts")
     with cf: amode=st.selectbox("Show:",["BUY & SELL only","Strong signals only","All (incl. CTB/CTS)"],key="amode",label_visibility="collapsed")
-    with cs: asort=st.selectbox("Sort:",["Signal Strength","RSI (4h)","RSI (1D)","Rank"],key="asort",label_visibility="collapsed")
+    with cs: asort=st.selectbox("Sort:",["Priority","Signal Strength","RSI (4h)","RSI (1D)","Rank"],key="asort",label_visibility="collapsed")
 
     if amode=="Strong signals only":
         # Strong BUY: RSI_4h <= 30, Strong SELL: RSI_4h >= 70
@@ -608,6 +665,10 @@ with tab_alerts:
     if asort=="RSI (4h)" and "rsi_4h" in adf.columns: adf=adf.sort_values("rsi_4h",ascending=False)
     elif asort=="RSI (1D)" and "rsi_1D" in adf.columns: adf=adf.sort_values("rsi_1D",ascending=False)
     elif asort=="Rank": adf=adf.sort_values("rank")
+    elif asort=="Priority" and "priority" in adf.columns:
+        # Sort by priority desc, then by abs(score) desc within same priority
+        adf["_abs_score"] = adf["score"].abs()
+        adf=adf.sort_values(["priority","_abs_score"], ascending=[False,False])
     else: adf=pd.concat([adf[adf["signal"].isin(["CTS","SELL"])].sort_values("rsi_4h",ascending=False),adf[adf["signal"].isin(["CTB","BUY"])].sort_values("rsi_4h")])
 
     if adf.empty: st.info("No active alerts with this filter.")
@@ -788,6 +849,7 @@ with tab_conf:
             "vol_trend": row.get("vol_trend", "NEUTRAL"),
             "vol_ratio": row.get("vol_ratio", 1.0),
             "obv_trend": row.get("obv_trend", "NEUTRAL"),
+            "candle_dir": row.get("candle_dir", "NEUTRAL"),
         }
         stoch_data = {
             "stoch_rsi_k": row.get("stoch_rsi_k", 50.0),
