@@ -924,3 +924,137 @@ def nr_confluence_score(nr_data: dict, rsi_4h: float) -> tuple:
         reason += " ✅ Breakout DOWN bestätigt"
 
     return max(-18, min(18, score)), reason
+
+
+def generate_nr_chart(df: pd.DataFrame, symbol: str, nr_data: dict) -> bytes:
+    """
+    Generate a candlestick chart with NR box overlay, breakout levels, and signals.
+    Returns PNG bytes for display in Streamlit.
+
+    Mimics the TradingView NR4/NR7 indicator visuals:
+    - Yellow/olive box over the NR candle range
+    - Solid lines for box high/low
+    - Dashed line for box mid
+    - ▲/▼ arrows for breakout signals
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as mpatches
+    import io
+
+    if df.empty or len(df) < 15:
+        return b""
+
+    # Use last 40 candles for visible context
+    plot_df = df.tail(40).copy().reset_index(drop=True)
+    n = len(plot_df)
+
+    fig, ax = plt.subplots(1, 1, figsize=(12, 5), facecolor="#0e0e1a")
+    ax.set_facecolor("#0e0e1a")
+
+    # Draw candlesticks
+    for i in range(n):
+        o = plot_df["open"].iloc[i]
+        h = plot_df["high"].iloc[i]
+        l = plot_df["low"].iloc[i]
+        c = plot_df["close"].iloc[i]
+        color = "#26a69a" if c >= o else "#ef5350"
+
+        # Wick
+        ax.plot([i, i], [l, h], color="#555555", linewidth=0.8)
+        # Body
+        body_bottom = min(o, c)
+        body_height = abs(c - o)
+        if body_height < (h - l) * 0.01:
+            body_height = (h - l) * 0.01
+        rect = mpatches.FancyBboxPatch(
+            (i - 0.35, body_bottom), 0.7, body_height,
+            boxstyle="round,pad=0.02", facecolor=color, edgecolor=color, linewidth=0.5
+        )
+        ax.add_patch(rect)
+
+    # NR Box overlay
+    box_h = nr_data.get("box_high", 0)
+    box_l = nr_data.get("box_low", 0)
+    box_mid = nr_data.get("box_mid", 0)
+    nr_level = nr_data.get("nr_level", "")
+
+    if box_h > 0 and box_l > 0 and nr_level:
+        # Find the NR candle index in plot_df
+        nr_candle_idx = None
+        for i in range(n - 1, -1, -1):
+            ch = plot_df["high"].iloc[i]
+            cl = plot_df["low"].iloc[i]
+            if abs(ch - box_h) < box_h * 0.0015 and abs(cl - box_l) < box_l * 0.0015:
+                nr_candle_idx = i
+                break
+        if nr_candle_idx is None:
+            nr_candle_idx = max(0, n - 2)
+
+        # Box color by NR level
+        nr_colors_map = {"NR4": "#66bb6a", "NR7": "#ffee58", "NR10": "#ff9800"}
+        box_color = nr_colors_map.get(nr_level, "#ffee58")
+
+        # NR Box rectangle (spans several candles around the NR candle)
+        box_start = max(0, nr_candle_idx - 6)
+        box_width = nr_candle_idx - box_start + 1
+        box_rect = mpatches.FancyBboxPatch(
+            (box_start - 0.5, box_l), box_width, box_h - box_l,
+            boxstyle="square,pad=0", facecolor=box_color, alpha=0.2, edgecolor="none"
+        )
+        ax.add_patch(box_rect)
+
+        # Horizontal breakout levels extending right
+        line_end = n + 1
+        ax.hlines(box_h, nr_candle_idx, line_end, colors="#787b86", linewidths=1.0, linestyles="solid")
+        ax.hlines(box_l, nr_candle_idx, line_end, colors="#787b86", linewidths=1.0, linestyles="solid")
+        ax.hlines(box_mid, nr_candle_idx, line_end, colors="#787b86", linewidths=0.8, linestyles="dashed")
+
+        # Level labels
+        ax.text(n + 0.3, box_h, f" {box_h:.4g}", color="#aaa", fontsize=8, va="center")
+        ax.text(n + 0.3, box_l, f" {box_l:.4g}", color="#aaa", fontsize=8, va="center")
+
+        # Breakout signals (▲/▼ arrows)
+        for i in range(nr_candle_idx + 1, n):
+            c_now = plot_df["close"].iloc[i]
+            c_prev = plot_df["close"].iloc[i - 1] if i > 0 else c_now
+            if c_now > box_h and c_prev <= box_h:
+                ax.annotate("▲", (i, box_l - (box_h - box_l) * 0.15),
+                           fontsize=14, color="#089981", ha="center", va="top", fontweight="bold")
+            elif c_now < box_l and c_prev >= box_l:
+                ax.annotate("▼", (i, box_h + (box_h - box_l) * 0.15),
+                           fontsize=14, color="#f23645", ha="center", va="bottom", fontweight="bold")
+
+        # NR level label on box
+        ax.text(box_start, box_h + (box_h - box_l) * 0.2, nr_level,
+               color=box_color, fontsize=12, fontweight="bold", ha="left")
+
+    # Current price marker
+    last_close = plot_df["close"].iloc[-1]
+    ax.axhline(y=last_close, color="#ffffff", linewidth=0.5, linestyle=":", alpha=0.3)
+    ax.text(n + 0.3, last_close, f" {last_close:.4g}", color="white", fontsize=8,
+           va="center", fontweight="bold",
+           bbox=dict(boxstyle="round,pad=0.2", facecolor="#333", edgecolor="none"))
+
+    # Styling
+    ax.set_xlim(-1, n + 3)
+    price_range = plot_df["high"].max() - plot_df["low"].min()
+    ax.set_ylim(plot_df["low"].min() - price_range * 0.05, plot_df["high"].max() + price_range * 0.1)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.spines["left"].set_color("#333")
+    ax.spines["bottom"].set_color("#333")
+    ax.tick_params(axis="y", colors="#888", labelsize=8)
+    ax.tick_params(axis="x", colors="#888", labelsize=7)
+    ax.set_title(f"{symbol} · 4h · {nr_level} Breakout Zone", color="white", fontsize=13, fontweight="bold", pad=10)
+    ax.yaxis.tick_right()
+    ax.set_xticks([])
+    ax.grid(axis="y", color="#1a1a2e", linewidth=0.5)
+
+    plt.tight_layout()
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=130, bbox_inches="tight", facecolor="#0e0e1a")
+    plt.close(fig)
+    buf.seek(0)
+    return buf.getvalue()
