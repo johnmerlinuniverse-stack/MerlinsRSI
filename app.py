@@ -259,8 +259,9 @@ def score_badge_html(row):
 def scan_all(coins, tfs, smc=False):
     from concurrent.futures import ThreadPoolExecutor, as_completed
     from ta.momentum import RSIIndicator
-    core_tfs = ["1h", "4h", "1D", "1W"]
-    all_tfs = list(dict.fromkeys(core_tfs + list(tfs)))
+    # P1: Only fetch essential TFs during scan. 1W is lazy (fetched on-demand per coin).
+    scan_tfs = ["1h", "4h", "1D"]  # 1W excluded from bulk fetch
+    all_tfs = list(dict.fromkeys(scan_tfs + [t for t in tfs if t != "1W"]))
     ex = get_exchange_status(); connected = ex["connected"]
     mkt_df = fetch_all_market_data(); tickers = fetch_all_tickers() if connected else {}
     mkt_lk = {}
@@ -294,6 +295,30 @@ def scan_all(coins, tfs, smc=False):
     kl_total = len(fetch_tasks)
     kl_ok = sum(1 for v in klines_cache.values() if not v.empty and len(v) >= 15)
     kl_fail = kl_total - kl_ok
+
+    # --- PHASE 1.5: Quick RSI pre-check to find signal candidates ---
+    # Identify coins likely to have signals, so we only fetch 1W for those
+    signal_candidates = set()
+    for sym in coin_list:
+        df_4h = klines_cache.get((sym, "4h"), pd.DataFrame())
+        if not df_4h.empty and len(df_4h) >= 15:
+            rs = RSIIndicator(close=df_4h["close"], window=14).rsi().dropna()
+            if len(rs) >= 1:
+                rsi_val = float(rs.iloc[-1])
+                if rsi_val <= 45 or rsi_val >= 55:  # Likely BUY/SELL/CTB/CTS
+                    signal_candidates.add(sym)
+
+    # P1: Fetch 1W klines ONLY for signal candidates (saves ~60-70% of 1W API calls)
+    if signal_candidates:
+        w_tasks = [(sym, "1W") for sym in signal_candidates]
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            w_futures = {pool.submit(_fetch_one, t): t for t in w_tasks}
+            for fut in as_completed(w_futures):
+                try:
+                    key, df_k = fut.result()
+                    klines_cache[key] = df_k
+                except Exception:
+                    pass
 
     # --- PHASE 2: Process results (CPU-only, fast) ---
     results = []
@@ -333,7 +358,8 @@ def scan_all(coins, tfs, smc=False):
         if r["price"]==0: continue
 
         kld={}
-        for tf in all_tfs:
+        process_tfs = list(all_tfs) + (["1W"] if "1W" not in all_tfs else [])
+        for tf in process_tfs:
             df_k = klines_cache.get((sym, tf), pd.DataFrame())
             if not df_k.empty and len(df_k)>=15:
                 kld[tf]=df_k
@@ -347,7 +373,7 @@ def scan_all(coins, tfs, smc=False):
         r["border_alpha"]=border_alpha(r.get("rsi_4h",50),r["signal"])
         ptf="4h" if "4h" in kld else (list(tfs)[0] if tfs else None)
         if ptf and ptf in kld:
-            md=calculate_macd(kld[ptf]); r["macd_trend"]=md["trend"]; r["macd_histogram"]=md["histogram"]; r["macd_histogram_pct"]=md.get("histogram_pct",0)
+            md=calculate_macd(kld[ptf]); r["macd_trend"]=md["trend"]; r["macd_histogram"]=md["histogram"]; r["macd_histogram_pct"]=md.get("histogram_pct",0); r["macd_hist_dir"]=md.get("hist_direction","FLAT")
             vd=calculate_volume_analysis(kld[ptf]); r["vol_trend"]=vd["vol_trend"]; r["vol_ratio"]=vd["vol_ratio"]; r["obv_trend"]=vd["obv_trend"]; r["candle_dir"]=vd.get("candle_dir","NEUTRAL")
             sk=calculate_stoch_rsi(kld[ptf]); r["stoch_rsi_k"]=sk["stoch_rsi_k"]; r["stoch_rsi_d"]=sk["stoch_rsi_d"]
             # NR4/NR7/NR10 detection (uses 4h klines, no extra API call)
@@ -381,7 +407,12 @@ def scan_all(coins, tfs, smc=False):
             pri=compute_alert_priority(individual, r["signal"])
             r["priority"]=pri["priority"]; r["priority_label"]=pri["label"]; r["priority_aligned"]=pri["aligned"]; r["priority_special"]=" ".join(pri["special"])
         else:
-            r.update({"macd_trend":"NEUTRAL","macd_histogram":0,"macd_histogram_pct":0,"vol_trend":"—","vol_ratio":1.0,"obv_trend":"—","candle_dir":"NEUTRAL","stoch_rsi_k":50.0,"stoch_rsi_d":50.0,"nr_level":"","nr_breakout":"","nr_range_ratio":1.0,"nr_box_high":0,"nr_box_low":0,"ema_trend":"NEUTRAL","ema_bull_count":0,"ema_bear_count":0,"divergence":"NONE","div_type":"NONE","score":0,"confluence_rec":"WAIT","reasons":"","priority":0,"priority_label":"","priority_aligned":0,"priority_special":""})
+            r.update({"macd_trend":"NEUTRAL","macd_histogram":0,"macd_histogram_pct":0,"macd_hist_dir":"FLAT","vol_trend":"—","vol_ratio":1.0,"obv_trend":"—","candle_dir":"NEUTRAL","stoch_rsi_k":50.0,"stoch_rsi_d":50.0,"nr_level":"","nr_breakout":"","nr_range_ratio":1.0,"nr_box_high":0,"nr_box_low":0,"ema_trend":"NEUTRAL","ema_bull_count":0,"ema_bear_count":0,"divergence":"NONE","div_type":"NONE","score":0,"confluence_rec":"WAIT","reasons":"","priority":0,"priority_label":"","priority_aligned":0,"priority_special":""})
+        # P2: Precompute sparklines once (cached with scan_all results)
+        try: r["spark_4h"] = sparkline_img(json.loads(r.get("closes_4h", "[]")), 110, 30)
+        except: r["spark_4h"] = ""
+        try: r["spark_1D"] = sparkline_img(json.loads(r.get("closes_1D", "[]")), 110, 30)
+        except: r["spark_1D"] = ""
         results.append(r)
     return pd.DataFrame(results) if results else pd.DataFrame()
 
@@ -522,10 +553,9 @@ def crow_html(row, charts=True):
     c1h,c24,c7,c30=row.get("change_1h",0),row.get("change_24h",0),row.get("change_7d",0),row.get("change_30d",0)
     ch=""
     if charts:
-        try: s7=sparkline_img(json.loads(row.get("closes_4h","[]")),110,30)
-        except: s7=""
-        try: s30=sparkline_img(json.loads(row.get("closes_1D","[]")),110,30)
-        except: s30=""
+        # P2: Use precomputed sparklines from scan_all (no JSON parse/SVG gen per render)
+        s7 = row.get("spark_4h", "")
+        s30 = row.get("spark_1D", "")
         ch=f'<div class="charts"><div><div class="clbl">● 7d</div>{s7}</div><div><div class="clbl">● 30d</div>{s30}</div></div>'
     # Strong glow effect on signal label
     glow = f'text-shadow:0 0 8px {sc},0 0 16px {sc};' if is_strong_sell or is_strong_buy else ""
@@ -576,8 +606,9 @@ def render_rows_with_chart(dataframe, tab_key, max_rows=60):
     for _,row in dataframe.head(max_rows).iterrows():
         sym=row["symbol"]
         st.markdown(crow_html(row), unsafe_allow_html=True)
-        # Inline buttons: Chart + Detail (compact, equal width)
-        bc1, bc2, _ = st.columns([1, 1, 10])
+        # Inline buttons: Chart + Detail + Watchlist (compact)
+        in_wl = sym in st.session_state.get("_watchlist", set())
+        bc1, bc2, bc3, _ = st.columns([1, 1, 1, 8])
         with bc1:
             if st.button(f"📈 Chart", key=f"btn_{tab_key}_{sym}", use_container_width=True):
                 if st.session_state.get(chart_state_key)==sym:
@@ -589,6 +620,15 @@ def render_rows_with_chart(dataframe, tab_key, max_rows=60):
             if st.button(f"🔍 Detail", key=f"det_{tab_key}_{sym}", use_container_width=True):
                 st.session_state["dc"] = sym
                 st.session_state["_go_detail"] = True
+                st.rerun()
+        with bc3:
+            star_label = "⭐" if in_wl else "☆"
+            if st.button(star_label, key=f"wl_{tab_key}_{sym}", use_container_width=True,
+                        help="Aus Watchlist entfernen" if in_wl else "Zur Watchlist"):
+                if in_wl:
+                    st.session_state["_watchlist"].discard(sym)
+                else:
+                    st.session_state["_watchlist"].add(sym)
                 st.rerun()
         # Show chart if this coin is selected
         if st.session_state.get(chart_state_key)==sym:
@@ -625,11 +665,17 @@ st.markdown(f'''<div class="hbar"><div><span class="htitle">🧙‍♂️ Merlin
 <div class="hstat">Avg RSI (4h): <b>{avg4:.2f}</b> ({(avg4-50)/50*100:+.2f}%) | Ch%: <span class="{cc(a1)}">{a1:+.2f}%</span> <span class="{cc(a24)}">{a24:+.2f}%</span> <span class="{cc(a7)}">{a7:+.2f}%</span> <span class="{cc(a30)}">{a30:+.2f}%</span></div>
 <div class="hstat"><span style="color:#FF6347;">🔴 {sct}</span> <span style="color:#FFD700;">🟡 {wct}</span> <span style="color:#00FF7F;">🟢 {bct}</span> | 📡 {ex_display} | Sig: {sig_tfs_str}</div></div>''', unsafe_allow_html=True)
 
+# F3: Watchlist initialization
+if "_watchlist" not in st.session_state:
+    st.session_state["_watchlist"] = set()
+wl_count = len(st.session_state["_watchlist"])
+wl_label = f"⭐ Watchlist ({wl_count})" if wl_count > 0 else "⭐ Watchlist"
+
 # ============================================================
 # TABS
 # ============================================================
-tab_alerts, tab_hm, tab_mc, tab_conf, tab_nr, tab_det = st.tabs([
-    f"🚨 24h Alerts {sct}🔴 {bct}🟢", "🔥 RSI Heatmap", "📊 By Market Cap", "🎯 Confluence", "🔮 NR Breakout", "🔍 Detail"])
+tab_alerts, tab_watch, tab_hm, tab_mc, tab_conf, tab_nr, tab_det = st.tabs([
+    f"🚨 24h Alerts {sct}🔴 {bct}🟢", wl_label, "🔥 RSI Heatmap", "📊 By Market Cap", "🎯 Confluence", "🔮 NR Breakout", "🔍 Detail"])
 
 # Auto-switch to Detail tab when requested
 if st.session_state.pop("_go_detail", False):
@@ -677,7 +723,49 @@ with tab_alerts:
         render_rows_with_chart(adf, "alert", 40)
 
 # ============================================================
-# TAB 2: RSI HEATMAP — Coin Rank default, search, grid
+# TAB 2: WATCHLIST — pinned favorite coins
+# ============================================================
+with tab_watch:
+    st.markdown("### ⭐ Watchlist")
+    wl = st.session_state.get("_watchlist", set())
+
+    # Add coins
+    wc1, wc2 = st.columns([3, 1])
+    with wc1:
+        all_syms = sorted(df["symbol"].tolist()) if not df.empty else []
+        add_sym = st.selectbox("Coin hinzufügen:", [""] + [s for s in all_syms if s not in wl],
+                               key="wl_add", label_visibility="collapsed",
+                               placeholder="Coin zur Watchlist hinzufügen...")
+    with wc2:
+        if st.button("➕ Hinzufügen", key="wl_add_btn", disabled=not add_sym):
+            if add_sym:
+                st.session_state["_watchlist"].add(add_sym)
+                st.rerun()
+
+    if wl:
+        # Show watchlist coins with full cards
+        wl_df = df[df["symbol"].isin(wl)].copy()
+        if not wl_df.empty:
+            # Sort by priority then score
+            if "priority" in wl_df.columns:
+                wl_df["_abs_score"] = wl_df["score"].abs()
+                wl_df = wl_df.sort_values(["priority", "_abs_score"], ascending=[False, False])
+            st.caption(f"**{len(wl_df)}** Coins in Watchlist")
+            for _, row in wl_df.iterrows():
+                c1, c2 = st.columns([10, 1])
+                with c1:
+                    st.markdown(crow_html(row), unsafe_allow_html=True)
+                with c2:
+                    if st.button("❌", key=f"wl_rm_{row['symbol']}", help=f"{row['symbol']} entfernen"):
+                        st.session_state["_watchlist"].discard(row["symbol"])
+                        st.rerun()
+        else:
+            st.info("Watchlist-Coins nicht im aktuellen Scan gefunden.")
+    else:
+        st.info("Deine Watchlist ist leer. Füge Coins über das Dropdown oben hinzu oder nutze die ⭐-Buttons auf den Coin-Karten.")
+
+# ============================================================
+# TAB 3: RSI HEATMAP — Coin Rank default, search, grid
 # ============================================================
 with tab_hm:
     h1,h2,h3=st.columns([2,1,1])
@@ -823,94 +911,103 @@ with tab_conf:
     # Uses the SAME compute_individual_scores() as scan_all for consistency.
     # Extra indicators (EMA, Divergence, BB, SMC) are computed here on-demand.
     active_filters = st.session_state.get("conf_filters", {k: v["default"] for k, v in CONFLUENCE_FILTERS.items()})
-    # Only need extra klines fetch for indicators NOT computed in scan_all
-    needs_extra = any(active_filters.get(k, False) for k in ["smart_money", "bollinger"])
+    # P3: Fast path — if no extra filters changed from scan_all defaults, reuse cached scores
+    scan_defaults = {"rsi_4h":True,"rsi_1d":True,"macd":True,"volume_obv":True,
+                    "stoch_rsi":True,"ema_alignment":True,"rsi_divergence":True,
+                    "nr_breakout":True,"smart_money":False,"bollinger":False,
+                    "funding_rate":False,"fear_greed":False}
+    filters_match_scan = all(active_filters.get(k, v) == v for k, v in scan_defaults.items())
 
-    # Lazy-load funding rates only if filter is active
-    funding_rates_map = {}
-    if active_filters.get("funding_rate", False):
-        try:
-            funding_rates_map = fetch_funding_rates_batch()
-        except Exception:
-            funding_rates_map = {}
+    if filters_match_scan and "score" in df.columns:
+        # Filters identical to scan_all → reuse cached scores (skip 107× recomputation)
+        sdf = df.copy()
+        sdf["dyn_score"] = sdf["score"]
+        sdf["dyn_rec"] = sdf["confluence_rec"]
+        sdf["dyn_reasons"] = sdf["reasons"]
+    else:
+        # Only need extra klines fetch for indicators NOT computed in scan_all
+        needs_extra = any(active_filters.get(k, False) for k in ["smart_money", "bollinger"])
 
-    # Compute scores for each coin
-    scored_rows = []
-    for _, row in df.iterrows():
-        sym = row["symbol"]
+        # Lazy-load funding rates only if filter is active
+        funding_rates_map = {}
+        if active_filters.get("funding_rate", False):
+            try:
+                funding_rates_map = fetch_funding_rates_batch()
+            except Exception:
+                funding_rates_map = {}
 
-        # Prepare data dicts from scan_all results
-        macd_data = {
-            "trend": row.get("macd_trend", "NEUTRAL"),
-            "histogram": row.get("macd_histogram", 0),
-            "histogram_pct": row.get("macd_histogram_pct", 0),
-        }
-        volume_data = {
-            "vol_trend": row.get("vol_trend", "NEUTRAL"),
-            "vol_ratio": row.get("vol_ratio", 1.0),
-            "obv_trend": row.get("obv_trend", "NEUTRAL"),
-            "candle_dir": row.get("candle_dir", "NEUTRAL"),
-        }
-        stoch_data = {
-            "stoch_rsi_k": row.get("stoch_rsi_k", 50.0),
-            "stoch_rsi_d": row.get("stoch_rsi_d", 50.0),
-        }
+        # Compute scores for each coin
+        scored_rows = []
+        for _, row in df.iterrows():
+            sym = row["symbol"]
 
-        # On-demand extra indicators (only what scan_all doesn't compute)
-        smc_data = None; bb_data = None
-        # EMA and Divergence: use scan_all cached results (Bug 1 fix)
-        ema_data = {"ema_trend": row.get("ema_trend", "NEUTRAL"),
-                    "ema_bull_count": int(row.get("ema_bull_count", 0)),
-                    "ema_bear_count": int(row.get("ema_bear_count", 0))}
-        div_data = {"divergence": row.get("divergence", "NONE"), "div_type": row.get("div_type", "NONE")}
-        if needs_extra:
-            kl_4h = fetch_klines_smart(sym, "4h")
-            if not kl_4h.empty and len(kl_4h) >= 15:
-                if active_filters.get("smart_money", False):
-                    ob = detect_order_blocks(kl_4h); ms = detect_market_structure(kl_4h)
-                    smc_data = {"ob_signal": ob.get("ob_signal", "NONE"),
-                                "fvg_signal": "BALANCED",
-                                "structure": ms.get("structure", "UNKNOWN")}
-                if active_filters.get("bollinger", False):
-                    bb_data = calculate_bb_squeeze(kl_4h)
-
-        # Funding Rate
-        fr_val = funding_rates_map.get(sym, None) if active_filters.get("funding_rate", False) else None
-
-        # Fear & Greed
-        fg_val = fear_greed_val if active_filters.get("fear_greed", False) else None
-
-        # NR Breakout (already computed in scan_all)
-        nr_d = None
-        if active_filters.get("nr_breakout", False) and row.get("nr_level", ""):
-            nr_d = {
-                "nr_level": row.get("nr_level", ""),
-                "breakout": row.get("nr_breakout", ""),
-                "range_ratio": row.get("nr_range_ratio", 1.0),
+            # Prepare data dicts from scan_all results
+            macd_data = {
+                "trend": row.get("macd_trend", "NEUTRAL"),
+                "histogram": row.get("macd_histogram", 0),
+                "histogram_pct": row.get("macd_histogram_pct", 0),
+                "hist_direction": row.get("macd_hist_dir", "FLAT"),
+            }
+            volume_data = {
+                "vol_trend": row.get("vol_trend", "NEUTRAL"),
+                "vol_ratio": row.get("vol_ratio", 1.0),
+                "obv_trend": row.get("obv_trend", "NEUTRAL"),
+                "candle_dir": row.get("candle_dir", "NEUTRAL"),
+            }
+            stoch_data = {
+                "stoch_rsi_k": row.get("stoch_rsi_k", 50.0),
+                "stoch_rsi_d": row.get("stoch_rsi_d", 50.0),
             }
 
-        # UNIFIED scoring — same function used everywhere
-        individual = compute_individual_scores(
-            rsi_4h=row.get("rsi_4h", 50),
-            rsi_1d=row.get("rsi_1D", 50),
-            macd_data=macd_data,
-            volume_data=volume_data,
-            stoch_rsi_data=stoch_data,
-            smc_data=smc_data,
-            ema_data=ema_data,
-            divergence_data=div_data,
-            bb_data=bb_data,
-            funding_rate=fr_val,
-            fear_greed=fg_val,
-            nr_data=nr_d,
-        )
-        result = compute_confluence_total(individual, active_filters)
+            # On-demand extra indicators (only what scan_all doesn't compute)
+            smc_data = None; bb_data = None
+            ema_data = {"ema_trend": row.get("ema_trend", "NEUTRAL"),
+                        "ema_bull_count": int(row.get("ema_bull_count", 0)),
+                        "ema_bear_count": int(row.get("ema_bear_count", 0))}
+            div_data = {"divergence": row.get("divergence", "NONE"), "div_type": row.get("div_type", "NONE")}
+            if needs_extra:
+                kl_4h = fetch_klines_smart(sym, "4h")
+                if not kl_4h.empty and len(kl_4h) >= 15:
+                    if active_filters.get("smart_money", False):
+                        ob = detect_order_blocks(kl_4h); ms = detect_market_structure(kl_4h)
+                        smc_data = {"ob_signal": ob.get("ob_signal", "NONE"),
+                                    "fvg_signal": "BALANCED",
+                                    "structure": ms.get("structure", "UNKNOWN")}
+                    if active_filters.get("bollinger", False):
+                        bb_data = calculate_bb_squeeze(kl_4h)
 
-        scored_rows.append({**row.to_dict(),
-            "dyn_score": result["score"],
-            "dyn_rec": result["recommendation"],
-            "dyn_reasons": " | ".join(result["reasons"][:4])})
-    sdf = pd.DataFrame(scored_rows)
+            fr_val = funding_rates_map.get(sym, None) if active_filters.get("funding_rate", False) else None
+            fg_val = fear_greed_val if active_filters.get("fear_greed", False) else None
+
+            nr_d = None
+            if active_filters.get("nr_breakout", False) and row.get("nr_level", ""):
+                nr_d = {
+                    "nr_level": row.get("nr_level", ""),
+                    "breakout": row.get("nr_breakout", ""),
+                    "range_ratio": row.get("nr_range_ratio", 1.0),
+                }
+
+            individual = compute_individual_scores(
+                rsi_4h=row.get("rsi_4h", 50),
+                rsi_1d=row.get("rsi_1D", 50),
+                macd_data=macd_data,
+                volume_data=volume_data,
+                stoch_rsi_data=stoch_data,
+                smc_data=smc_data,
+                ema_data=ema_data,
+                divergence_data=div_data,
+                bb_data=bb_data,
+                funding_rate=fr_val,
+                fear_greed=fg_val,
+                nr_data=nr_d,
+            )
+            result = compute_confluence_total(individual, active_filters)
+
+            scored_rows.append({**row.to_dict(),
+                "dyn_score": result["score"],
+                "dyn_rec": result["recommendation"],
+                "dyn_reasons": " | ".join(result["reasons"][:4])})
+        sdf = pd.DataFrame(scored_rows)
 
     # --- TOP BUY ---
     st.markdown("#### 🟢 Top Buy")
