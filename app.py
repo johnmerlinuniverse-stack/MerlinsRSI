@@ -23,6 +23,7 @@ from indicators import (
     generate_confluence_signal, calculate_stoch_rsi,
     calculate_ema_alignment_fast, detect_rsi_divergence, calculate_bb_squeeze,
     compute_individual_scores, compute_confluence_total,
+    detect_nr_pattern, nr_confluence_score,
 )
 from alerts import check_and_send_alerts
 
@@ -182,6 +183,7 @@ CONFLUENCE_FILTERS = {
     "bollinger":      {"label": "📏 Bollinger Bands",   "default": False, "weight": 10, "desc": "Squeeze-Erkennung + Band-Position"},
     "funding_rate":   {"label": "💰 Funding Rate",     "default": False, "weight": 10, "desc": "Futures Funding Rate (konträr)"},
     "fear_greed":     {"label": "😱 Fear & Greed",     "default": False, "weight": 8,  "desc": "Markt-Sentiment (konträr)"},
+    "nr_breakout":    {"label": "🔮 NR Breakout",      "default": True,  "weight": 18, "desc": "NR4/NR7/NR10 Volatilitäts-Kontraktion → Ausbruch"},
 }
 
 # Session state for confluence filters (reset if defaults changed)
@@ -305,6 +307,8 @@ def scan_all(coins, tfs, smc=False):
             md=calculate_macd(kld[ptf]); r["macd_trend"]=md["trend"]; r["macd_histogram"]=md["histogram"]; r["macd_histogram_pct"]=md.get("histogram_pct",0)
             vd=calculate_volume_analysis(kld[ptf]); r["vol_trend"]=vd["vol_trend"]; r["vol_ratio"]=vd["vol_ratio"]; r["obv_trend"]=vd["obv_trend"]
             sk=calculate_stoch_rsi(kld[ptf]); r["stoch_rsi_k"]=sk["stoch_rsi_k"]; r["stoch_rsi_d"]=sk["stoch_rsi_d"]
+            # NR4/NR7/NR10 detection (uses 4h klines, no extra API call)
+            nr=detect_nr_pattern(kld[ptf]); r["nr_level"]=nr.get("nr_level",""); r["nr_breakout"]=nr.get("breakout",""); r["nr_range_ratio"]=nr.get("range_ratio",1.0); r["nr_box_high"]=nr.get("box_high",0); r["nr_box_low"]=nr.get("box_low",0)
             if smc:
                 ob=detect_order_blocks(kld[ptf]); fv=detect_fair_value_gaps(kld[ptf]); ms=detect_market_structure(kld[ptf])
                 r["ob_signal"]=ob["ob_signal"]; r["fvg_signal"]=fv["fvg_signal"]; r["market_structure"]=ms["structure"]; r["bos"]=ms["break_of_structure"]
@@ -312,7 +316,7 @@ def scan_all(coins, tfs, smc=False):
             cf=generate_confluence_signal(rsi_4h=r.get("rsi_4h",50),rsi_1d=r.get("rsi_1D",50),macd_data=md,volume_data=vd,smc_data=sc_d)
             r["score"]=cf["score"]; r["confluence_rec"]=cf["recommendation"]; r["reasons"]=" | ".join(cf["reasons"][:3])
         else:
-            r.update({"macd_trend":"NEUTRAL","macd_histogram":0,"macd_histogram_pct":0,"vol_trend":"—","vol_ratio":1.0,"obv_trend":"—","stoch_rsi_k":50.0,"stoch_rsi_d":50.0,"score":0,"confluence_rec":"WAIT","reasons":""})
+            r.update({"macd_trend":"NEUTRAL","macd_histogram":0,"macd_histogram_pct":0,"vol_trend":"—","vol_ratio":1.0,"obv_trend":"—","stoch_rsi_k":50.0,"stoch_rsi_d":50.0,"nr_level":"","nr_breakout":"","nr_range_ratio":1.0,"nr_box_high":0,"nr_box_low":0,"score":0,"confluence_rec":"WAIT","reasons":""})
         results.append(r)
     return pd.DataFrame(results) if results else pd.DataFrame()
 
@@ -469,13 +473,23 @@ def crow_html(row, charts=True):
     elif conf_sc <= -30: conf_html = f'<span style="color:#FF6347;font-size:10px;">⚡ {conf_rec} ({conf_sc})</span>'
     elif conf_sc <= -10: conf_html = f'<span style="color:#FF8888;font-size:10px;">↓ {conf_rec} ({conf_sc})</span>'
     else: conf_html = f'<span style="color:#666;font-size:10px;">{conf_rec} ({conf_sc})</span>'
+    # NR badge
+    nr_lv = row.get("nr_level", "")
+    nr_bo = row.get("nr_breakout", "")
+    if nr_lv:
+        nr_colors = {"NR4": "#66bb6a", "NR7": "#ffee58", "NR10": "#ff9800"}
+        nr_c = nr_colors.get(nr_lv, "#ffee58")
+        nr_bo_txt = f" ▲UP" if nr_bo == "UP" else (f" ▼DN" if nr_bo == "DOWN" else " ⏳")
+        nr_badge = f'<span style="background:{nr_c};color:#000;font-size:10px;font-weight:bold;padding:1px 5px;border-radius:8px;margin-left:4px;">{nr_lv}{nr_bo_txt}</span>'
+    else:
+        nr_badge = ""
     return f'''<div class="crow" style="{bdr}">
 <div class="ic">{icon(im, sym)}</div>
 <div class="inf"><div><span class="cn">{sym}</span><span class="cf">{nm}</span><span class="cr">{rks}</span></div>
 <div class="pl">Price: <b style="color:white;">{fp(row["price"])}</b></div>
 <div class="chs">Ch%: <span class="{cc(c1h)}">{c1h:+.2f}%</span> <span class="{cc(c24)}">{c24:+.2f}%</span> <span class="{cc(c7)}" style="font-weight:bold;">{c7:+.2f}%</span> <span class="{cc(c30)}">{c30:+.2f}%</span></div></div>
 {ch}
-<div class="sig"><span style="font-size:11px;color:#888;">RSI:</span> <span class="sl" style="color:{sc};{glow}">{sig}</span>
+<div class="sig"><span style="font-size:11px;color:#888;">RSI:</span> <span class="sl" style="color:{sc};{glow}">{sig}</span>{nr_badge}
 <div class="rsi-row"><span class="rsi-pill">1h: <b style="color:{rsc(r1h)};">{r1h:.1f}</b></span><span class="rsi-pill" style="background:#252550;"><b style="color:{rsc(r4)};">{r4:.1f}</b> 4h</span><span class="rsi-pill" style="background:#252550;"><b style="color:{rsc(r1d)};">{r1d:.1f}</b> 1D</span><span class="rsi-pill">1W: <b style="color:{rsc(r1w)};">{r1w:.1f}</b></span></div>
 <div style="margin-top:2px;">Conf: {conf_html}</div>
 </div></div>'''
@@ -538,8 +552,8 @@ st.markdown(f'''<div class="hbar"><div><span class="htitle">🧙‍♂️ Merlin
 # ============================================================
 # TABS
 # ============================================================
-tab_alerts, tab_hm, tab_mc, tab_conf, tab_det = st.tabs([
-    f"🚨 24h Alerts {sct}🔴 {bct}🟢", "🔥 RSI Heatmap", "📊 By Market Cap", "🎯 Confluence", "🔍 Detail"])
+tab_alerts, tab_hm, tab_mc, tab_conf, tab_nr, tab_det = st.tabs([
+    f"🚨 24h Alerts {sct}🔴 {bct}🟢", "🔥 RSI Heatmap", "📊 By Market Cap", "🎯 Confluence", "🔮 NR Breakout", "🔍 Detail"])
 
 # Auto-switch to Detail tab when requested
 if st.session_state.pop("_go_detail", False):
@@ -717,13 +731,13 @@ with tab_conf:
     with st.expander("ℹ️ Was ist der Confluence Scanner?"):
         st.markdown("""**Der Confluence Scanner** bewertet jeden Coin anhand **mehrerer unabhängiger Indikatoren** und berechnet einen normalisierten Score von -100 bis +100.
 
-**Die 5 Standard-Filter (vorausgewählt):** RSI 4h (±30), RSI 1D (±20), MACD (±20), Volume & OBV (±15), Stoch RSI (±12)
+**Die 7 Standard-Filter (vorausgewählt):** RSI 4h (±30), RSI 1D (±20), MACD (±20), Volume & OBV (±15), RSI Divergenz (±15), EMA Alignment (±12), Stoch RSI (±12), NR Breakout (±18)
 
-**Zusätzliche Filter (optional):** Smart Money (±15), EMA Alignment (±12), RSI Divergenz (±15), Bollinger Bands (±10), Funding Rate (±10), Fear & Greed (±8)
+**Zusätzliche Filter (optional):** Smart Money (±15), Bollinger Bands (±10), Funding Rate (±10), Fear & Greed (±8)
 
 **Score:** ≥60 STRONG BUY · 30-59 BUY · 10-29 LEAN BUY · -9 bis 9 WAIT · -29 bis -10 LEAN SELL · -59 bis -30 SELL · ≤-60 STRONG SELL
 
-💡 **Score-Badge** (z.B. ⚡42) erscheint auch in *24h Alerts* und *By Market Cap*.""")
+💡 **NR Badge** (z.B. NR7 ⏳) auf Coin-Karten zeigt aktive Kompression.""")
 
     # --- COMPUTE EXTENDED SCORES ON-DEMAND ---
     # Uses the SAME compute_individual_scores() as scan_all for consistency.
@@ -783,6 +797,15 @@ with tab_conf:
         # Fear & Greed
         fg_val = fear_greed_val if active_filters.get("fear_greed", False) else None
 
+        # NR Breakout (already computed in scan_all)
+        nr_d = None
+        if active_filters.get("nr_breakout", False) and row.get("nr_level", ""):
+            nr_d = {
+                "nr_level": row.get("nr_level", ""),
+                "breakout": row.get("nr_breakout", ""),
+                "range_ratio": row.get("nr_range_ratio", 1.0),
+            }
+
         # UNIFIED scoring — same function used everywhere
         individual = compute_individual_scores(
             rsi_4h=row.get("rsi_4h", 50),
@@ -796,6 +819,7 @@ with tab_conf:
             bb_data=bb_data,
             funding_rate=fr_val,
             fear_greed=fg_val,
+            nr_data=nr_d,
         )
         result = compute_confluence_total(individual, active_filters)
 
@@ -848,7 +872,105 @@ with tab_conf:
 </div>''', unsafe_allow_html=True)
 
 # ============================================================
-# TAB 5: DETAIL — Complete Analysis Dashboard
+# TAB 5: NR BREAKOUT SCANNER
+# ============================================================
+with tab_nr:
+    st.markdown("### 🔮 NR Breakout Scanner — Narrow Range Detection")
+    with st.expander("ℹ️ Was ist NR4/NR7/NR10?", expanded=False):
+        st.markdown("""**Narrow Range (NR)** erkennt Coins in einer **Volatilitäts-Kompression** — die Ruhe vor dem Sturm.
+
+**NR4:** Engste Kerze seit 4 Perioden → leichte Kompression
+**NR7:** Engste Kerze seit 7 Perioden → starke Kompression, Ausbruch wahrscheinlich
+**NR10:** Engste Kerze seit 10 Perioden → extreme Kompression, explosiver Ausbruch erwartet
+
+**Kombination mit RSI:** NR + RSI überverkauft → Breakout UP wahrscheinlich · NR + RSI überkauft → Breakout DOWN wahrscheinlich · NR + RSI neutral → Richtung offen, Box beobachten
+
+**Box:** High/Low der NR-Kerze definieren die Breakout-Levels. Preis über Box = UP Breakout, Preis unter Box = DOWN Breakout.""")
+
+    # Filter NR coins
+    nr_coins = df[df["nr_level"].astype(str).isin(["NR4","NR7","NR10"])].copy()
+    nr_count = len(nr_coins)
+
+    c1, c2 = st.columns([3, 1])
+    with c1:
+        st.markdown(f"**{nr_count}** von {len(df)} Coins aktuell in NR-Kompression")
+    with c2:
+        nr_filter = st.selectbox("Filter:", ["Alle NR", "NR7 + NR10", "Nur NR10"], key="nr_filt")
+
+    if nr_filter == "NR7 + NR10":
+        nr_coins = nr_coins[nr_coins["nr_level"].isin(["NR7", "NR10"])]
+    elif nr_filter == "Nur NR10":
+        nr_coins = nr_coins[nr_coins["nr_level"] == "NR10"]
+
+    if nr_coins.empty:
+        st.info("🔮 Aktuell keine Coins mit NR-Pattern erkannt. Das ist normal — NR tritt nur bei 5-15% der Coins gleichzeitig auf.")
+    else:
+        # Sort: NR10 first, then NR7, then NR4, then by RSI extremity
+        nr_order = {"NR10": 0, "NR7": 1, "NR4": 2}
+        nr_coins["_nr_sort"] = nr_coins["nr_level"].map(nr_order)
+        nr_coins["_rsi_ext"] = (nr_coins["rsi_4h"] - 50).abs()
+        nr_coins = nr_coins.sort_values(["_nr_sort", "_rsi_ext"], ascending=[True, False])
+
+        for _, row in nr_coins.iterrows():
+            sym = row["symbol"]
+            nr_lv = row["nr_level"]
+            rsi4 = row.get("rsi_4h", 50)
+            bo = row.get("nr_breakout", "")
+            box_h = row.get("nr_box_high", 0)
+            box_l = row.get("nr_box_low", 0)
+            price = row.get("price", 0)
+            rr = row.get("nr_range_ratio", 1.0)
+
+            # Colors
+            nr_colors = {"NR4": "#66bb6a", "NR7": "#ffee58", "NR10": "#ff9800"}
+            nr_c = nr_colors.get(nr_lv, "#ffee58")
+
+            # Direction prediction based on RSI
+            if rsi4 <= 30:
+                direction = "🟢 Breakout UP sehr wahrscheinlich"
+                dir_c = "#00FF7F"
+            elif rsi4 <= 42:
+                direction = "🟢 Breakout UP wahrscheinlich"
+                dir_c = "#88FFAA"
+            elif rsi4 >= 70:
+                direction = "🔴 Breakout DOWN sehr wahrscheinlich"
+                dir_c = "#FF4444"
+            elif rsi4 >= 58:
+                direction = "🔴 Breakout DOWN wahrscheinlich"
+                dir_c = "#FF8888"
+            else:
+                direction = "⏳ Richtung offen — Box beobachten"
+                dir_c = "#FFD700"
+
+            # Breakout status
+            if bo == "UP":
+                bo_html = '<span style="color:#00FF7F;font-weight:bold;">✅ BREAKOUT UP</span>'
+            elif bo == "DOWN":
+                bo_html = '<span style="color:#FF4444;font-weight:bold;">✅ BREAKOUT DOWN</span>'
+            else:
+                bo_html = '<span style="color:#888;">⏳ Ausstehend</span>'
+
+            im = row.get("coin_image", "")
+            st.markdown(f'''<div style="background:#1a1a2e;border-radius:10px;padding:12px 16px;margin:6px 0;border-left:5px solid {nr_c};">
+<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;">
+<div style="display:flex;align-items:center;gap:8px;">
+{icon(im, sym)}
+<div>
+<b style="color:white;font-size:16px;">{sym}</b>
+<span style="background:{nr_c};color:#000;font-size:12px;font-weight:bold;padding:2px 8px;border-radius:10px;margin-left:6px;">{nr_lv}</span>
+<div style="color:#888;font-size:11px;">Range-Ratio: {rr:.3f} · Box: {fp(box_l)} — {fp(box_h)}</div>
+</div>
+</div>
+<div style="text-align:right;">
+<div style="font-size:13px;">{bo_html}</div>
+<div style="color:{dir_c};font-size:12px;margin-top:2px;">{direction}</div>
+<div style="color:#888;font-size:11px;">RSI 4h: <b style="color:{rsc(rsi4)};">{rsi4:.1f}</b> · Preis: {fp(price)}</div>
+</div>
+</div>
+</div>''', unsafe_allow_html=True)
+
+# ============================================================
+# TAB 6: DETAIL — Complete Analysis Dashboard
 # ============================================================
 with tab_det:
     sel=st.selectbox("Select Coin",df["symbol"].tolist(),key="dc")
@@ -934,6 +1056,16 @@ with tab_det:
         fz = fib_data.get("fib_zone","N/A")
         if "61.8" in fz or "near low" in fz: bull_pts += 1; reasons_bull.append(f"Fibonacci: Golden Zone ({fz})")
         elif "near high" in fz: bear_pts += 1; reasons_bear.append(f"Fibonacci: nahe Swing High ({fz})")
+        # NR Breakout
+        det_nr_lv = c.get("nr_level", "")
+        det_nr_bo = c.get("nr_breakout", "")
+        if det_nr_lv:
+            nr_w = {"NR4": 1, "NR7": 2, "NR10": 3}.get(det_nr_lv, 1)
+            if det_nr_bo == "UP": bull_pts += nr_w; reasons_bull.append(f"{det_nr_lv}: Breakout UP bestätigt")
+            elif det_nr_bo == "DOWN": bear_pts += nr_w; reasons_bear.append(f"{det_nr_lv}: Breakout DOWN bestätigt")
+            elif r4 <= 42: bull_pts += max(1, nr_w - 1); reasons_bull.append(f"{det_nr_lv}: Kompression + RSI bullish")
+            elif r4 >= 58: bear_pts += max(1, nr_w - 1); reasons_bear.append(f"{det_nr_lv}: Kompression + RSI bearish")
+            else: reasons_bull.append(f"{det_nr_lv}: Kompression aktiv, Richtung offen")
 
         total_pts = bull_pts + bear_pts
         if total_pts == 0: total_pts = 1
@@ -1395,7 +1527,8 @@ with tab_det:
 | EMA 50/200 | {ema_data.get('cross_50_200','N/A')} | {'🟢' if ema_data.get('cross_50_200') in ('GOLDEN','BULLISH') else ('🔴' if ema_data.get('cross_50_200') in ('DEATH','BEARISH') else '🟡')} |
 | Bollinger | {bb_data.get('bb_position','—')} ({bb_data.get('bb_pct',50):.0f}%) | {'🟢' if bb_data.get('bb_pct',50)<20 else ('🔴' if bb_data.get('bb_pct',50)>80 else '🟡')} |
 | ATR Volatilität | {atr_data.get('volatility','—')} ({atr_data.get('atr_pct',0):.2f}%) | {'⚠️' if atr_data.get('volatility') in ('HIGH','VERY_HIGH') else '✅'} |
-| BTC Korrelation | {btc_corr.get('correlation',0):.2f} ({btc_corr.get('corr_label','N/A')}) | {'🔗' if abs(btc_corr.get('correlation',0))>0.5 else '🔓'} |""")
+| BTC Korrelation | {btc_corr.get('correlation',0):.2f} ({btc_corr.get('corr_label','N/A')}) | {'🔗' if abs(btc_corr.get('correlation',0))>0.5 else '🔓'} |
+| NR Breakout | {c.get('nr_level','—') or '—'} {('↑ UP' if c.get('nr_breakout')=='UP' else ('↓ DOWN' if c.get('nr_breakout')=='DOWN' else '⏳')) if c.get('nr_level') else ''} (ratio: {c.get('nr_range_ratio',1.0):.3f}) | {'🔮' if c.get('nr_level') else '—'} |""")
         with st.expander("ℹ️ Was bedeutet die Indikator-Übersicht?"):
             st.markdown("""Diese Tabelle fasst alle Indikatoren zusammen. **Je mehr 🟢 desto bullischer, je mehr 🔴 desto bearischer.**
 
