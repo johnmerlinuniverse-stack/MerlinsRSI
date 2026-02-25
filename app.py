@@ -23,7 +23,7 @@ from indicators import (
     generate_confluence_signal, calculate_stoch_rsi,
     calculate_ema_alignment_fast, detect_rsi_divergence, calculate_bb_squeeze,
     compute_individual_scores, compute_confluence_total,
-    detect_nr_pattern, nr_confluence_score,
+    detect_nr_pattern, nr_confluence_score, generate_nr_chart,
 )
 from alerts import check_and_send_alerts
 
@@ -911,7 +911,7 @@ with tab_nr:
         nr_coins["_rsi_ext"] = (nr_coins["rsi_4h"] - 50).abs()
         nr_coins = nr_coins.sort_values(["_nr_sort", "_rsi_ext"], ascending=[True, False])
 
-        for _, row in nr_coins.iterrows():
+        for idx, (_, row) in enumerate(nr_coins.iterrows()):
             sym = row["symbol"]
             nr_lv = row["nr_level"]
             rsi4 = row.get("rsi_4h", 50)
@@ -968,6 +968,23 @@ with tab_nr:
 </div>
 </div>
 </div>''', unsafe_allow_html=True)
+
+            # On-demand chart button
+            chart_key = f"nr_chart_{sym}"
+            if st.button(f"📊 Chart anzeigen — {sym}", key=chart_key):
+                with st.spinner(f"Lade {sym} 4h Klines..."):
+                    chart_df = fetch_klines_smart(sym, "4h")
+                    if not chart_df.empty and len(chart_df) >= 15:
+                        nr_d = detect_nr_pattern(chart_df)
+                        chart_bytes = generate_nr_chart(chart_df, sym, nr_d)
+                        if chart_bytes:
+                            st.image(chart_bytes, use_container_width=True)
+                            # Box info below chart
+                            st.caption(f"🔮 {nr_d.get('nr_level','—')} · Box: {fp(nr_d.get('box_low',0))} — {fp(nr_d.get('box_high',0))} · Mid: {fp(nr_d.get('box_mid',0))} · Breakout: {nr_d.get('breakout','⏳')}")
+                        else:
+                            st.warning("Chart konnte nicht generiert werden — zu wenige Daten.")
+                    else:
+                        st.warning(f"Keine ausreichenden Klines für {sym}.")
 
 # ============================================================
 # TAB 6: DETAIL — Complete Analysis Dashboard
