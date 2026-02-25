@@ -327,6 +327,7 @@ def compute_individual_scores(
     bb_data: dict = None,
     funding_rate: float = None,
     fear_greed: int = None,
+    nr_data: dict = None,
 ) -> dict:
     """
     Compute individual score for EACH confluence factor.
@@ -510,12 +511,19 @@ def compute_individual_scores(
     scores["fear_greed"] = s
     reasons["fear_greed"] = r
 
+    # --- NR4/NR7/NR10 Breakout (max ±18) ---
+    s = 0; r = ""
+    if nr_data and nr_data.get("nr_level"):
+        s, r = nr_confluence_score(nr_data, rsi_4h)
+    scores["nr_breakout"] = s
+    reasons["nr_breakout"] = r
+
     # Max possible score per factor (for normalization)
     max_weights = {
         "rsi_4h": 30, "rsi_1d": 20, "macd": 20, "volume_obv": 15,
         "stoch_rsi": 12, "smart_money": 15, "ema_alignment": 12,
         "rsi_divergence": 15, "bollinger": 10, "funding_rate": 10,
-        "fear_greed": 8,
+        "fear_greed": 8, "nr_breakout": 18,
     }
 
     return {"scores": scores, "reasons": reasons, "max_weights": max_weights}
@@ -774,3 +782,145 @@ def multi_tf_rsi_summary(rsi_values: dict) -> dict:
     elif bearish > bullish: conf = "LEAN_SELL"
     else: conf = "NEUTRAL"
     return {"confluence": conf, "bullish_count": bullish, "bearish_count": bearish, "total": total}
+
+
+# ============================================================
+# NR4 / NR7 / NR10 — Narrow Range Detection + Breakout
+# ============================================================
+
+def detect_nr_pattern(df: pd.DataFrame) -> dict:
+    """
+    Detect NR4, NR7, NR10 patterns from OHLCV data.
+    NRx = current candle has the narrowest range of the last x candles.
+    Higher x → longer compression → more explosive breakout.
+
+    Returns:
+        nr4, nr7, nr10: bool flags
+        nr_level: highest NR detected ("NR10" > "NR7" > "NR4" > None)
+        range_ratio: current range vs average range (< 1.0 = compressed)
+        box_high, box_low, box_mid: the NR candle's range (breakout levels)
+        breakout: "UP" / "DOWN" / None (if price broke out of the box)
+    """
+    result = {
+        "nr4": False, "nr7": False, "nr10": False,
+        "nr_level": None, "range_ratio": 1.0,
+        "box_high": 0, "box_low": 0, "box_mid": 0,
+        "breakout": None, "breakout_strength": 0,
+    }
+
+    if df.empty or len(df) < 12:
+        return result
+
+    highs = df["high"].values
+    lows = df["low"].values
+    closes = df["close"].values
+    ranges = highs - lows
+
+    # Current candle range
+    curr_range = ranges[-1]
+    if curr_range <= 0:
+        return result
+
+    # Check NR patterns on the PREVIOUS candle (completed)
+    # just like the Pine Script: [1] offset
+    if len(ranges) >= 5:
+        prev_range = ranges[-2]
+        nr4 = prev_range <= np.min(ranges[-5:-1])  # narrowest of last 4 completed
+        result["nr4"] = bool(nr4)
+
+    if len(ranges) >= 8:
+        prev_range = ranges[-2]
+        nr7 = prev_range <= np.min(ranges[-8:-1])  # narrowest of last 7 completed
+        result["nr7"] = bool(nr7)
+        if nr7:
+            result["nr4"] = False  # NR7 supersedes NR4
+
+    if len(ranges) >= 11:
+        prev_range = ranges[-2]
+        nr10 = prev_range <= np.min(ranges[-11:-1])  # narrowest of last 10 completed
+        result["nr10"] = bool(nr10)
+        if nr10:
+            result["nr7"] = False  # NR10 supersedes NR7
+            result["nr4"] = False
+
+    # Determine highest NR level
+    if result["nr10"]:
+        result["nr_level"] = "NR10"
+    elif result["nr7"]:
+        result["nr_level"] = "NR7"
+    elif result["nr4"]:
+        result["nr_level"] = "NR4"
+
+    # Box = the NR candle (previous completed candle)
+    if result["nr_level"]:
+        result["box_high"] = float(highs[-2])
+        result["box_low"] = float(lows[-2])
+        result["box_mid"] = float((highs[-2] + lows[-2]) / 2)
+
+        # Breakout detection: has current candle broken out of the box?
+        current_close = closes[-1]
+        box_h = result["box_high"]
+        box_l = result["box_low"]
+        box_range = box_h - box_l
+
+        if current_close > box_h:
+            result["breakout"] = "UP"
+            result["breakout_strength"] = round((current_close - box_h) / box_range * 100, 1) if box_range > 0 else 0
+        elif current_close < box_l:
+            result["breakout"] = "DOWN"
+            result["breakout_strength"] = round((box_l - current_close) / box_range * 100, 1) if box_range > 0 else 0
+
+    # Range ratio: how compressed is the current range vs recent average?
+    avg_range = np.mean(ranges[-10:]) if len(ranges) >= 10 else np.mean(ranges)
+    result["range_ratio"] = round(float(curr_range / avg_range), 3) if avg_range > 0 else 1.0
+
+    return result
+
+
+def nr_confluence_score(nr_data: dict, rsi_4h: float) -> tuple:
+    """
+    Score NR pattern in context of RSI for confluence.
+    NR + directional RSI = strong signal.
+    NR + neutral RSI = breakout imminent but direction unclear.
+
+    Returns (score: int, reason: str) with max ±18.
+    """
+    nr_level = nr_data.get("nr_level")
+    if not nr_level:
+        return 0, ""
+
+    # NR base weight: NR10 > NR7 > NR4
+    nr_weight = {"NR4": 1.0, "NR7": 1.5, "NR10": 2.0}.get(nr_level, 1.0)
+
+    breakout = nr_data.get("breakout")
+
+    # Case 1: NR + RSI oversold → bullish breakout expected
+    if rsi_4h <= 30:
+        score = int(9 * nr_weight)  # NR10: 18, NR7: 13, NR4: 9
+        reason = f"{nr_level} + RSI überverkauft → Breakout UP"
+    elif rsi_4h <= 42:
+        score = int(6 * nr_weight)
+        reason = f"{nr_level} + RSI bullish → Breakout UP wahrsch."
+
+    # Case 2: NR + RSI overbought → bearish breakout expected
+    elif rsi_4h >= 70:
+        score = -int(9 * nr_weight)
+        reason = f"{nr_level} + RSI überkauft → Breakout DOWN"
+    elif rsi_4h >= 58:
+        score = -int(6 * nr_weight)
+        reason = f"{nr_level} + RSI bearish → Breakout DOWN wahrsch."
+
+    # Case 3: NR + neutral RSI → direction unclear, small weight
+    else:
+        score = 0
+        reason = f"{nr_level} aktiv — Ausbruch steht bevor, Richtung offen"
+
+    # Bonus if breakout already confirmed
+    if breakout == "UP" and score >= 0:
+        score = min(score + 4, 18)
+        reason += " ✅ Breakout UP bestätigt"
+    elif breakout == "DOWN" and score <= 0:
+        score = max(score - 4, -18)
+        reason += " ✅ Breakout DOWN bestätigt"
+
+    return max(-18, min(18, score)), reason
