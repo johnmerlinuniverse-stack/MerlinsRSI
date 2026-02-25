@@ -88,7 +88,7 @@ def calculate_macd(df: pd.DataFrame) -> dict:
 
 def calculate_volume_analysis(df: pd.DataFrame) -> dict:
     if df.empty or len(df) < 23:
-        return {"vol_trend": "NEUTRAL", "vol_ratio": 1.0, "obv_trend": "NEUTRAL"}
+        return {"vol_trend": "NEUTRAL", "vol_ratio": 1.0, "obv_trend": "NEUTRAL", "candle_dir": "NEUTRAL"}
     # Use second-to-last candle (-2) because the current candle (-1) is still forming.
     # Average excludes BOTH the running candle (-1) AND the measured candle (-2)
     # so the measured candle doesn't dampen its own spike detection.
@@ -96,12 +96,17 @@ def calculate_volume_analysis(df: pd.DataFrame) -> dict:
     vol_completed = df["volume"].iloc[-2]
     # Guard: if volume data is missing/zero (e.g. CoinGecko fallback), return NEUTRAL
     if vol_avg <= 0 or vol_completed <= 0:
-        return {"vol_trend": "NEUTRAL", "vol_ratio": 1.0, "obv_trend": "NEUTRAL"}
+        return {"vol_trend": "NEUTRAL", "vol_ratio": 1.0, "obv_trend": "NEUTRAL", "candle_dir": "NEUTRAL"}
     vol_ratio = round(vol_completed / vol_avg, 2)
     if vol_ratio > 1.5: vol_trend = "HIGH"
     elif vol_ratio > 1.0: vol_trend = "ABOVE_AVG"
     elif vol_ratio > 0.5: vol_trend = "BELOW_AVG"
     else: vol_trend = "LOW"
+    # Candle direction: was the high-volume candle green or red?
+    # This tells us if volume supports buyers or sellers.
+    c_open = df["open"].iloc[-2]
+    c_close = df["close"].iloc[-2]
+    candle_dir = "GREEN" if c_close >= c_open else "RED"
     try:
         obv = OnBalanceVolumeIndicator(close=df["close"], volume=df["volume"])
         obv_series = obv.on_balance_volume()
@@ -109,7 +114,7 @@ def calculate_volume_analysis(df: pd.DataFrame) -> dict:
         obv_trend = "BULLISH" if obv_series.iloc[-1] > obv_sma.iloc[-1] else "BEARISH"
     except Exception:
         obv_trend = "NEUTRAL"
-    return {"vol_trend": vol_trend, "vol_ratio": vol_ratio, "obv_trend": obv_trend}
+    return {"vol_trend": vol_trend, "vol_ratio": vol_ratio, "obv_trend": obv_trend, "candle_dir": candle_dir}
 
 
 # ============================================================
@@ -392,16 +397,41 @@ def compute_individual_scores(
     reasons["macd"] = r
 
     # --- Volume & OBV (max ±15) ---
-    vd = volume_data or {"vol_trend": "NEUTRAL", "obv_trend": "NEUTRAL"}
+    vd = volume_data or {"vol_trend": "NEUTRAL", "obv_trend": "NEUTRAL", "candle_dir": "NEUTRAL"}
     s = 0; r = ""
-    if vd["vol_trend"] == "HIGH" and vd["obv_trend"] == "BULLISH":
-        s = 15; r = "Hohes Vol + bullish OBV"
-    elif vd["vol_trend"] == "HIGH" and vd["obv_trend"] == "BEARISH":
-        s = -15; r = "Hohes Vol + bearish OBV"
-    elif vd["obv_trend"] == "BULLISH":
-        s = 8; r = "Bullish OBV"
-    elif vd["obv_trend"] == "BEARISH":
-        s = -8; r = "Bearish OBV"
+    candle = vd.get("candle_dir", "NEUTRAL")
+    obv = vd.get("obv_trend", "NEUTRAL")
+    vol = vd.get("vol_trend", "NEUTRAL")
+
+    if vol == "HIGH":
+        # High volume: candle direction is the primary signal
+        if candle == "GREEN" and obv == "BULLISH":
+            s = 15; r = "Hohes Vol + grüne Kerze + bullish OBV"
+        elif candle == "GREEN":
+            s = 10; r = "Hohes Vol + grüne Kerze (Kaufdruck)"
+        elif candle == "RED" and obv == "BEARISH":
+            s = -15; r = "Hohes Vol + rote Kerze + bearish OBV"
+        elif candle == "RED":
+            s = -10; r = "Hohes Vol + rote Kerze (Verkaufsdruck)"
+        else:
+            # Fallback to OBV only
+            s = 8 if obv == "BULLISH" else (-8 if obv == "BEARISH" else 0)
+            r = f"Hohes Vol, OBV {obv.lower()}"
+    elif vol == "ABOVE_AVG":
+        if candle == "GREEN" and obv == "BULLISH":
+            s = 8; r = "Gutes Vol + grüne Kerze + bullish OBV"
+        elif candle == "RED" and obv == "BEARISH":
+            s = -8; r = "Gutes Vol + rote Kerze + bearish OBV"
+        elif obv == "BULLISH":
+            s = 5; r = "Bullish OBV"
+        elif obv == "BEARISH":
+            s = -5; r = "Bearish OBV"
+    else:
+        # Low/below avg volume: OBV trend still matters but weaker
+        if obv == "BULLISH":
+            s = 4; r = "Bullish OBV (Vol niedrig)"
+        elif obv == "BEARISH":
+            s = -4; r = "Bearish OBV (Vol niedrig)"
     scores["volume_obv"] = s
     reasons["volume_obv"] = r
 
@@ -580,6 +610,70 @@ def compute_confluence_total(individual: dict, active_filters: dict) -> dict:
         "recommendation": rec,
         "reasons": active_reasons,
         "active_count": sum(1 for v in active_filters.values() if v),
+    }
+
+
+def compute_alert_priority(individual: dict, signal: str) -> dict:
+    """
+    Compute alert priority based on how many indicators align in the signal direction.
+    More alignment = higher conviction = higher priority.
+
+    Returns:
+        priority: 0-3 (0=no signal, 1=weak, 2=moderate, 3=strong)
+        label: emoji string for display
+        aligned: number of aligned factors
+        special: list of special confluence factors active (NR, divergence)
+    """
+    if signal == "WAIT":
+        return {"priority": 0, "label": "", "aligned": 0, "special": []}
+
+    scores = individual.get("scores", {})
+    is_bullish = signal in ("BUY", "CTB")
+
+    # Count aligned factors (non-zero, same direction as signal)
+    aligned = 0
+    total_active = 0
+    special = []
+
+    for key, score in scores.items():
+        if score == 0:
+            continue
+        total_active += 1
+        if is_bullish and score > 0:
+            aligned += 1
+        elif not is_bullish and score < 0:
+            aligned += 1
+
+    # Special factors boost priority
+    if scores.get("nr_breakout", 0) != 0:
+        nr_aligned = (is_bullish and scores["nr_breakout"] > 0) or (not is_bullish and scores["nr_breakout"] < 0)
+        if nr_aligned:
+            special.append("NR")
+    if scores.get("rsi_divergence", 0) != 0:
+        div_aligned = (is_bullish and scores["rsi_divergence"] > 0) or (not is_bullish and scores["rsi_divergence"] < 0)
+        if div_aligned:
+            special.append("DIV")
+
+    # Priority thresholds
+    special_bonus = len(special)
+    effective = aligned + special_bonus
+
+    if effective >= 7:
+        priority = 3  # 🔥🔥🔥 — extreme conviction
+    elif effective >= 5:
+        priority = 2  # 🔥🔥 — strong conviction
+    elif effective >= 3:
+        priority = 1  # 🔥 — moderate conviction
+    else:
+        priority = 0
+
+    labels = {0: "", 1: "🔥", 2: "🔥🔥", 3: "🔥🔥🔥"}
+    return {
+        "priority": priority,
+        "label": labels[priority],
+        "aligned": aligned,
+        "total_active": total_active,
+        "special": special,
     }
 
 
