@@ -1743,3 +1743,4 @@ with tab_det:
 
 st.markdown("---")
 st.markdown(f"<div style='text-align:center;color:#555;font-size:11px;'>🧙‍♂️ Merlin | {len(coins_to_scan)}×{len(tf_to_scan)}TF | {ex_display} | BUY≤42 SELL≥58 | DYOR!</div>",unsafe_allow_html=True)
+
