@@ -1152,7 +1152,6 @@ def generate_nr_chart(df: pd.DataFrame, symbol: str, nr_data: dict) -> bytes:
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    import matplotlib.patches as mpatches
     import io
 
     if df.empty or len(df) < 15:
@@ -1165,6 +1164,14 @@ def generate_nr_chart(df: pd.DataFrame, symbol: str, nr_data: dict) -> bytes:
     fig, ax = plt.subplots(1, 1, figsize=(12, 5), facecolor="#0e0e1a")
     ax.set_facecolor("#0e0e1a")
 
+    # Price range for proportional calculations
+    price_min = plot_df["low"].min()
+    price_max = plot_df["high"].max()
+    price_range = price_max - price_min or price_max * 0.01
+
+    # Dynamic candle width based on number of candles
+    candle_width = min(0.7, max(0.3, 30 / n))
+
     # Draw candlesticks
     for i in range(n):
         o = plot_df["open"].iloc[i]
@@ -1175,14 +1182,17 @@ def generate_nr_chart(df: pd.DataFrame, symbol: str, nr_data: dict) -> bytes:
 
         # Wick
         ax.plot([i, i], [l, h], color="#555555", linewidth=0.8)
-        # Body
+        # Body — use Rectangle instead of FancyBboxPatch (no data-space padding)
         body_bottom = min(o, c)
         body_height = abs(c - o)
-        if body_height < (h - l) * 0.01:
-            body_height = (h - l) * 0.01
-        rect = mpatches.FancyBboxPatch(
-            (i - 0.35, body_bottom), 0.7, body_height,
-            boxstyle="round,pad=0.02", facecolor=color, edgecolor=color, linewidth=0.5
+        # Minimum body height: 0.3% of visible price range (proportional, not absolute)
+        min_body = price_range * 0.003
+        if body_height < min_body:
+            body_height = min_body
+            body_bottom = (o + c) / 2 - body_height / 2
+        rect = plt.Rectangle(
+            (i - candle_width / 2, body_bottom), candle_width, body_height,
+            facecolor=color, edgecolor=color, linewidth=0.5
         )
         ax.add_patch(rect)
 
@@ -1211,9 +1221,9 @@ def generate_nr_chart(df: pd.DataFrame, symbol: str, nr_data: dict) -> bytes:
         # NR Box rectangle (spans several candles around the NR candle)
         box_start = max(0, nr_candle_idx - 6)
         box_width = nr_candle_idx - box_start + 1
-        box_rect = mpatches.FancyBboxPatch(
+        box_rect = plt.Rectangle(
             (box_start - 0.5, box_l), box_width, box_h - box_l,
-            boxstyle="square,pad=0", facecolor=box_color, alpha=0.2, edgecolor="none"
+            facecolor=box_color, alpha=0.2, edgecolor="none"
         )
         ax.add_patch(box_rect)
 
@@ -1251,8 +1261,7 @@ def generate_nr_chart(df: pd.DataFrame, symbol: str, nr_data: dict) -> bytes:
 
     # Styling
     ax.set_xlim(-1, n + 3)
-    price_range = plot_df["high"].max() - plot_df["low"].min()
-    ax.set_ylim(plot_df["low"].min() - price_range * 0.05, plot_df["high"].max() + price_range * 0.1)
+    ax.set_ylim(price_min - price_range * 0.05, price_max + price_range * 0.1)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
     ax.spines["left"].set_color("#333")
