@@ -646,7 +646,7 @@ def crow_html(row, charts=True):
     # Strong glow effect on signal label
     glow = f'text-shadow:0 0 8px {sc},0 0 16px {sc};' if is_strong_sell or is_strong_buy else ""
     r1h=row.get("rsi_1h",50); r4=row.get("rsi_4h",50); r1d=row.get("rsi_1D",50); r1w=row.get("rsi_1W",50)
-    # Confluence score — separate line
+    # Confluence score — separate line + Alignment badge
     conf_sc = row.get("score", 0)
     conf_rec = row.get("confluence_rec", "WAIT")
     if conf_sc >= 30: conf_html = f'<span style="color:#00FF7F;font-size:10px;">⚡ {conf_rec} ({conf_sc})</span>'
@@ -654,6 +654,15 @@ def crow_html(row, charts=True):
     elif conf_sc <= -30: conf_html = f'<span style="color:#FF6347;font-size:10px;">⚡ {conf_rec} ({conf_sc})</span>'
     elif conf_sc <= -10: conf_html = f'<span style="color:#FF8888;font-size:10px;">↓ {conf_rec} ({conf_sc})</span>'
     else: conf_html = f'<span style="color:#666;font-size:10px;">{conf_rec} ({conf_sc})</span>'
+
+    # RSI ↔ Confluence Alignment Badge
+    align_badge = ""
+    if sig in ("BUY", "CTB", "SELL", "CTS"):
+        is_bull = sig in ("BUY", "CTB")
+        if (is_bull and conf_sc > 5) or (not is_bull and conf_sc < -5):
+            align_badge = '<span style="background:#00FF7F22;color:#00FF7F;font-size:9px;padding:1px 5px;border-radius:4px;margin-left:4px;" title="RSI + Confluence zeigen in die gleiche Richtung">✅ Bestätigt</span>'
+        elif (is_bull and conf_sc < -5) or (not is_bull and conf_sc > 5):
+            align_badge = '<span style="background:#FF634722;color:#FF6347;font-size:9px;padding:1px 5px;border-radius:4px;margin-left:4px;" title="RSI + Confluence widersprechen sich — Vorsicht!">⚠️ Konflikt</span>'
     # NR badge
     nr_lv = row.get("nr_level", "")
     nr_bo = row.get("nr_breakout", "")
@@ -683,7 +692,7 @@ def crow_html(row, charts=True):
 {ch}
 <div class="sig"><span style="font-size:11px;color:#888;">RSI:</span> <span class="sl" style="color:{sc};{glow}">{sig}</span>{pri_badge}{nr_badge}
 <div class="rsi-row"><span class="rsi-pill">1h: <b style="color:{rsc(r1h)};">{r1h:.1f}</b></span><span class="rsi-pill" style="background:#252550;"><b style="color:{rsc(r4)};">{r4:.1f}</b> 4h</span><span class="rsi-pill" style="background:#252550;"><b style="color:{rsc(r1d)};">{r1d:.1f}</b> 1D</span><span class="rsi-pill">1W: <b style="color:{rsc(r1w)};">{r1w:.1f}</b></span></div>
-<div style="margin-top:2px;">Conf: {conf_html}</div>
+<div style="margin-top:2px;">Conf: {conf_html}{align_badge}</div>
 </div></div>'''
 
 def render_rows_with_chart(dataframe, tab_key, max_rows=60):
@@ -1256,34 +1265,42 @@ with tab_nr:
 # TAB 7: SIGNAL HISTORY — Backtest past signals
 # ============================================================
 with tab_hist:
-    st.markdown("### 📊 Signal History — Backtest")
-    st.caption("Simuliert vergangene RSI-Signale auf 4h-Klines und prüft, ob der Preis in die vorhergesagte Richtung ging.")
+    st.markdown("### 📊 Signal History")
+
+    # Explanation box
+    st.markdown("""<div style="background:#12121f;border-radius:10px;padding:12px 16px;margin-bottom:12px;border-left:4px solid #FFD700;">
+<div style="color:#FFD700;font-size:13px;font-weight:bold;">So funktioniert der Backtest</div>
+<div style="color:#aaa;font-size:12px;margin-top:4px;">
+Der Scanner geht die <b style="color:white;">letzten 4h-Kerzen</b> durch und prüft: <em>Was hätte das RSI-Signal zu dem Zeitpunkt angezeigt?</em>
+Dann wird gemessen, ob der Preis danach <b style="color:#00FF7F;">in die richtige Richtung</b> ging.<br>
+<span style="color:#00FF7F;">● Bestätigt</span> = RSI + Confluence stimmen überein &nbsp;│&nbsp;
+<span style="color:#FF6347;">● Konflikt</span> = RSI + Confluence widersprechen sich &nbsp;│&nbsp;
+<span style="color:#00FF7F;">✅</span> = Signal war richtig &nbsp;│&nbsp; <span style="color:#FF6347;">❌</span> = Signal war falsch
+</div></div>""", unsafe_allow_html=True)
 
     hc1, hc2, hc3 = st.columns([2, 1, 1])
     with hc1:
-        # Show only coins with active signals or let user pick any
         signal_coins = df[df["signal"] != "WAIT"]["symbol"].tolist() if not df.empty else []
         all_coins = df["symbol"].tolist() if not df.empty else []
-        hist_coin = st.selectbox("Coin auswählen:", all_coins,
+        hist_coin = st.selectbox("Coin:", all_coins,
                                  index=all_coins.index(signal_coins[0]) if signal_coins else 0,
                                  key="hist_coin")
     with hc2:
-        hist_lookback = st.selectbox("Signale zurück:", [10, 15, 20, 30], index=2, key="hist_lb")
+        hist_lookback = st.selectbox("Anzahl Signale:", [10, 15, 20, 30], index=2, key="hist_lb")
     with hc3:
-        hist_forward = st.selectbox("Prüfen nach:", ["3 Kerzen (12h)", "6 Kerzen (24h)", "12 Kerzen (2d)"],
+        hist_forward = st.selectbox("Ergebnis nach:", ["12h (3 Kerzen)", "24h (6 Kerzen)", "2 Tage (12 Kerzen)"],
                                     index=0, key="hist_fw")
-        fw_map = {"3 Kerzen (12h)": 3, "6 Kerzen (24h)": 6, "12 Kerzen (2d)": 12}
+        fw_map = {"12h (3 Kerzen)": 3, "24h (6 Kerzen)": 6, "2 Tage (12 Kerzen)": 12}
         forward_candles = fw_map[hist_forward]
 
     if hist_coin:
-        with st.spinner(f"⏳ Lade {hist_coin} 4h Klines für Backtest..."):
+        with st.spinner(f"⏳ Lade {hist_coin} Backtest..."):
             hist_df = fetch_klines_smart(hist_coin, "4h")
 
         if not hist_df.empty and len(hist_df) >= hist_lookback + forward_candles + 50:
             signals = backtest_signals(hist_df, lookback=hist_lookback, forward=forward_candles)
 
             if signals:
-                # Summary stats
                 total = len(signals)
                 correct = sum(1 for s in signals if s["correct"])
                 wrong = total - correct
@@ -1296,77 +1313,141 @@ with tab_hist:
                 buy_rate = round(buy_correct / len(buy_signals) * 100, 1) if buy_signals else 0
                 sell_rate = round(sell_correct / len(sell_signals) * 100, 1) if sell_signals else 0
 
-                # Confluence-aligned signals (RSI + Confluence same direction)
-                aligned = [s for s in signals if
-                    (s["rsi_signal"] in ("BUY","CTB") and s["conf_score"] > 0) or
-                    (s["rsi_signal"] in ("SELL","CTS") and s["conf_score"] < 0)]
-                aligned_correct = sum(1 for s in aligned if s["correct"])
-                aligned_rate = round(aligned_correct / len(aligned) * 100, 1) if aligned else 0
+                # Average PnL
+                avg_pnl = round(sum(s["pnl_pct"] for s in signals) / total, 2) if total > 0 else 0
+                buy_pnl = round(sum(s["pnl_pct"] for s in buy_signals) / len(buy_signals), 2) if buy_signals else 0
+                sell_pnl = round(sum(-s["pnl_pct"] for s in sell_signals) / len(sell_signals), 2) if sell_signals else 0
 
-                # Conflicting signals
+                # Aligned vs Conflicting
+                aligned = [s for s in signals if
+                    (s["rsi_signal"] in ("BUY","CTB") and s["conf_score"] > 5) or
+                    (s["rsi_signal"] in ("SELL","CTS") and s["conf_score"] < -5)]
                 conflicting = [s for s in signals if
-                    (s["rsi_signal"] in ("BUY","CTB") and s["conf_score"] < 0) or
-                    (s["rsi_signal"] in ("SELL","CTS") and s["conf_score"] > 0)]
+                    (s["rsi_signal"] in ("BUY","CTB") and s["conf_score"] < -5) or
+                    (s["rsi_signal"] in ("SELL","CTS") and s["conf_score"] > 5)]
+                neutral = [s for s in signals if s not in aligned and s not in conflicting]
+
+                aligned_correct = sum(1 for s in aligned if s["correct"])
                 conflict_correct = sum(1 for s in conflicting if s["correct"])
+                aligned_rate = round(aligned_correct / len(aligned) * 100, 1) if aligned else 0
                 conflict_rate = round(conflict_correct / len(conflicting) * 100, 1) if conflicting else 0
 
-                # Display stats
                 hr_color = "#00FF7F" if hit_rate >= 60 else ("#FFD700" if hit_rate >= 45 else "#FF6347")
+                pnl_color = "#00FF7F" if avg_pnl > 0 else ("#FF6347" if avg_pnl < 0 else "#888")
+
+                # ── STATS DASHBOARD ──
                 st.markdown(f"""<div style="background:#1a1a2e;border-radius:10px;padding:16px;margin:8px 0;">
-<div style="display:flex;justify-content:space-around;flex-wrap:wrap;gap:10px;text-align:center;">
-<div><div style="color:#888;font-size:12px;">Gesamt</div><div style="color:white;font-size:24px;font-weight:bold;">{total}</div><div style="color:#888;font-size:11px;">Signale</div></div>
-<div><div style="color:#888;font-size:12px;">Trefferquote</div><div style="color:{hr_color};font-size:24px;font-weight:bold;">{hit_rate}%</div><div style="color:#888;font-size:11px;">{correct}✅ {wrong}❌</div></div>
-<div><div style="color:#888;font-size:12px;">BUY/CTB</div><div style="color:#00FF7F;font-size:24px;font-weight:bold;">{buy_rate}%</div><div style="color:#888;font-size:11px;">{buy_correct}/{len(buy_signals)}</div></div>
-<div><div style="color:#888;font-size:12px;">SELL/CTS</div><div style="color:#FF6347;font-size:24px;font-weight:bold;">{sell_rate}%</div><div style="color:#888;font-size:11px;">{sell_correct}/{len(sell_signals)}</div></div>
+<div style="display:flex;justify-content:space-around;flex-wrap:wrap;gap:12px;text-align:center;">
+<div>
+<div style="color:#888;font-size:11px;">TREFFERQUOTE</div>
+<div style="color:{hr_color};font-size:28px;font-weight:bold;">{hit_rate}%</div>
+<div style="color:#888;font-size:11px;">{correct} ✅ / {wrong} ❌ von {total}</div>
+</div>
+<div style="border-left:1px solid #333;padding-left:16px;">
+<div style="color:#888;font-size:11px;">Ø RENDITE / Signal</div>
+<div style="color:{pnl_color};font-size:28px;font-weight:bold;">{avg_pnl:+.2f}%</div>
+<div style="color:#888;font-size:11px;">nach {forward_candles*4}h</div>
+</div>
+<div style="border-left:1px solid #333;padding-left:16px;">
+<div style="color:#00FF7F;font-size:11px;">🟢 BUY/CTB</div>
+<div style="color:#00FF7F;font-size:22px;font-weight:bold;">{buy_rate}%</div>
+<div style="color:#888;font-size:11px;">{buy_correct}/{len(buy_signals)} · Ø {buy_pnl:+.2f}%</div>
+</div>
+<div style="border-left:1px solid #333;padding-left:16px;">
+<div style="color:#FF6347;font-size:11px;">🔴 SELL/CTS</div>
+<div style="color:#FF6347;font-size:22px;font-weight:bold;">{sell_rate}%</div>
+<div style="color:#888;font-size:11px;">{sell_correct}/{len(sell_signals)} · Ø {sell_pnl:+.2f}%</div>
+</div>
 </div></div>""", unsafe_allow_html=True)
 
-                # Key insight: Aligned vs Conflicting
+                # ── KEY INSIGHT: Aligned vs Conflicting ──
                 if aligned or conflicting:
-                    st.markdown(f"""<div style="background:#12121f;border-radius:10px;padding:12px;margin:8px 0;border-left:4px solid #FFD700;">
-<div style="color:#FFD700;font-size:13px;font-weight:bold;margin-bottom:6px;">💡 RSI ↔ Confluence Vergleich</div>
-<div style="display:flex;gap:20px;flex-wrap:wrap;">
-<div style="color:#888;font-size:12px;">RSI + Confluence <b style="color:#00FF7F;">aligned</b>: <b style="color:white;">{aligned_rate}%</b> Trefferquote ({len(aligned)} Signale)</div>
-<div style="color:#888;font-size:12px;">RSI + Confluence <b style="color:#FF6347;">gegeneinander</b>: <b style="color:white;">{conflict_rate}%</b> Trefferquote ({len(conflicting)} Signale)</div>
+                    al_bar_w = aligned_rate
+                    co_bar_w = conflict_rate
+                    st.markdown(f"""<div style="background:#12121f;border-radius:10px;padding:14px;margin:8px 0;">
+<div style="color:white;font-size:13px;font-weight:bold;margin-bottom:10px;">💡 Lohnt es sich auf Confluence zu achten?</div>
+<div style="display:flex;gap:16px;flex-wrap:wrap;">
+<div style="flex:1;min-width:200px;">
+<div style="color:#00FF7F;font-size:12px;font-weight:bold;margin-bottom:4px;">✅ Bestätigt — RSI + Confluence gleiche Richtung</div>
+<div style="background:#1a1a2e;border-radius:6px;height:28px;position:relative;overflow:hidden;">
+<div style="background:#00FF7F33;height:100%;width:{al_bar_w}%;border-radius:6px;display:flex;align-items:center;padding-left:8px;">
+<span style="color:#00FF7F;font-weight:bold;font-size:13px;">{aligned_rate}%</span>
+<span style="color:#888;font-size:11px;margin-left:8px;">({aligned_correct}/{len(aligned)} Signale)</span>
+</div></div>
+</div>
+<div style="flex:1;min-width:200px;">
+<div style="color:#FF6347;font-size:12px;font-weight:bold;margin-bottom:4px;">⚠️ Konflikt — RSI + Confluence gegeneinander</div>
+<div style="background:#1a1a2e;border-radius:6px;height:28px;position:relative;overflow:hidden;">
+<div style="background:#FF634733;height:100%;width:{co_bar_w}%;border-radius:6px;display:flex;align-items:center;padding-left:8px;">
+<span style="color:#FF6347;font-weight:bold;font-size:13px;">{conflict_rate}%</span>
+<span style="color:#888;font-size:11px;margin-left:8px;">({conflict_correct}/{len(conflicting)} Signale)</span>
+</div></div>
+</div>
+</div>
+<div style="color:#888;font-size:11px;margin-top:8px;">
+{'⚡ <b style=\"color:#00FF7F;\">Bestätigte Signale performen besser!</b> Warte auf Confluence-Bestätigung für bessere Trefferquote.' if aligned_rate > conflict_rate + 10 else ('⚠️ <b style=\"color:#FFD700;\">Kein klarer Vorteil</b> bei diesem Coin/Zeitraum — beide ähnlich gut.' if abs(aligned_rate - conflict_rate) <= 10 else '🤔 <b style=\"color:#FF6347;\">Konfligierende Signale performen hier besser</b> — RSI allein scheint zuverlässiger.')}
 </div></div>""", unsafe_allow_html=True)
 
-                # Signal table
-                st.markdown("---")
-                st.markdown("#### Einzelne Signale")
+                # ── SIGNAL TIMELINE ──
+                st.markdown(f"""<div style="color:white;font-size:13px;font-weight:bold;margin:16px 0 8px;">
+📋 Letzte {total} Signale — neueste zuerst
+</div>""", unsafe_allow_html=True)
+
+                # Table header
+                st.markdown("""<div style="display:flex;padding:4px 14px;color:#555;font-size:10px;font-weight:bold;text-transform:uppercase;letter-spacing:0.5px;">
+<div style="flex:1.2;">Signal</div>
+<div style="flex:1;">RSI · Confluence</div>
+<div style="flex:1;">Einstieg → Ausstieg</div>
+<div style="flex:0.6;text-align:right;">Ergebnis</div>
+</div>""", unsafe_allow_html=True)
+
                 for i, sig in enumerate(signals):
                     is_bull = sig["rsi_signal"] in ("BUY", "CTB")
                     sig_c = "#00FF7F" if is_bull else "#FF6347"
-                    pnl_c = "#00FF7F" if sig["pnl_pct"] > 0 else ("#FF6347" if sig["pnl_pct"] < 0 else "#888")
+                    pnl = sig["pnl_pct"]
+                    pnl_c = "#00FF7F" if pnl > 0 else ("#FF6347" if pnl < 0 else "#888")
                     result_icon = "✅" if sig["correct"] else "❌"
 
-                    # Confluence alignment indicator
-                    if (is_bull and sig["conf_score"] > 0) or (not is_bull and sig["conf_score"] < 0):
-                        align_badge = '<span style="color:#00FF7F;font-size:10px;">● aligned</span>'
-                    elif (is_bull and sig["conf_score"] < 0) or (not is_bull and sig["conf_score"] > 0):
-                        align_badge = '<span style="color:#FF6347;font-size:10px;">● Konflikt</span>'
+                    # Alignment status
+                    if sig in aligned:
+                        al_dot = '<span style="color:#00FF7F;">●</span>'
+                        al_txt = "Bestätigt"
+                    elif sig in conflicting:
+                        al_dot = '<span style="color:#FF6347;">●</span>'
+                        al_txt = "Konflikt"
                     else:
-                        align_badge = '<span style="color:#888;font-size:10px;">● neutral</span>'
+                        al_dot = '<span style="color:#888;">●</span>'
+                        al_txt = "Neutral"
 
-                    conf_c = "#00FF7F" if sig["conf_score"] > 10 else ("#FF6347" if sig["conf_score"] < -10 else "#888")
+                    # Confluence score display
+                    cs = sig["conf_score"]
+                    cs_c = "#00FF7F" if cs > 10 else ("#FF6347" if cs < -10 else "#888")
 
-                    st.markdown(f"""<div style="background:#1a1a2e;border-radius:8px;padding:8px 14px;margin:3px 0;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;border-left:4px solid {sig_c};">
-<div style="min-width:200px;">
+                    # PnL bar (visual indicator)
+                    bar_w = min(abs(pnl) * 10, 100)  # Scale: 1% = 10px width
+                    bar_dir = "right" if pnl < 0 else "left"
+
+                    st.markdown(f"""<div style="background:#1a1a2e;border-radius:8px;padding:8px 14px;margin:2px 0;display:flex;align-items:center;border-left:4px solid {sig_c};">
+<div style="flex:1.2;">
 <span style="color:{sig_c};font-weight:bold;font-size:14px;">{sig["rsi_signal"]}</span>
-<span style="color:#888;font-size:11px;margin-left:6px;">RSI: {sig["rsi_4h"]}</span>
-<span style="color:{conf_c};font-size:11px;margin-left:6px;">Conf: {sig["conf_score"]:+d} {sig["conf_rec"]}</span>
-{align_badge}
+<span style="font-size:10px;margin-left:4px;">{al_dot} {al_txt}</span>
 </div>
-<div style="color:#888;font-size:11px;">
-Entry: <b style="color:white;">{fp(sig["entry_price"])}</b> → Exit: <b style="color:white;">{fp(sig["exit_price"])}</b>
+<div style="flex:1;">
+<span style="color:white;font-size:12px;">RSI {sig["rsi_4h"]}</span>
+<span style="color:{cs_c};font-size:11px;margin-left:4px;">Conf {cs:+d}</span>
 </div>
-<div style="text-align:right;min-width:100px;">
-<span style="color:{pnl_c};font-size:14px;font-weight:bold;">{sig["pnl_pct"]:+.2f}%</span>
-<span style="font-size:16px;margin-left:4px;">{result_icon}</span>
+<div style="flex:1;color:#888;font-size:11px;">
+{fp(sig["entry_price"])} <span style="color:#555;">→</span> {fp(sig["exit_price"])}
+</div>
+<div style="flex:0.6;text-align:right;">
+<span style="color:{pnl_c};font-size:14px;font-weight:bold;">{pnl:+.2f}%</span>
+<span style="font-size:14px;margin-left:2px;">{result_icon}</span>
 </div>
 </div>""", unsafe_allow_html=True)
 
-                st.caption(f"⏱️ Zeitraum: letzte {hist_lookback} Signale · Ergebnis gemessen nach {forward_candles} Kerzen ({forward_candles*4}h)")
+                st.caption(f"⏱️ Basiert auf {total} Signalen aus den letzten ~{total*4}–{(hist_lookback+forward_candles)*4}h · Ergebnis nach {forward_candles} Kerzen ({forward_candles*4}h)")
             else:
-                st.info(f"Keine aktiven Signale (BUY/SELL/CTB/CTS) in den letzten {hist_lookback} Kerzen für {hist_coin}.")
+                st.info(f"🔍 Keine aktiven Signale (BUY/SELL/CTB/CTS) in den letzten Kerzen für {hist_coin}. Der RSI war vermutlich durchgehend im neutralen Bereich (42–58).")
         else:
             needed = hist_lookback + forward_candles + 50
             got = len(hist_df) if not hist_df.empty else 0
