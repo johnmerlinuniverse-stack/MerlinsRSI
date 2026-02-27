@@ -1138,6 +1138,134 @@ def nr_confluence_score(nr_data: dict, rsi_4h: float) -> tuple:
     return max(-18, min(18, score)), reason
 
 
+# ============================================================
+# SIGNAL HISTORY — Backtest past signals on closed candles
+# ============================================================
+
+def backtest_signals(df: pd.DataFrame, lookback: int = 20, forward: int = 3) -> list:
+    """
+    Walk backwards through closed 4h candles and simulate what signal + confluence
+    score would have been at each point. Then check if price moved in the predicted
+    direction after `forward` candles.
+
+    Args:
+        df: OHLCV DataFrame (4h klines, needs at least lookback+50 candles)
+        lookback: How many past signals to evaluate
+        forward: How many candles forward to check result (3 = 12h for 4h TF)
+
+    Returns:
+        List of dicts with signal, score, entry_price, exit_price, result, pnl_pct
+    """
+    if df.empty or len(df) < lookback + forward + 50:
+        return []
+
+    results = []
+
+    # Walk from candle -(forward+1) back to candle -(forward+lookback)
+    # So each signal candle has `forward` candles AFTER it to measure outcome
+    for offset in range(forward + 1, forward + lookback + 1):
+        idx = len(df) - offset
+        if idx < 50:  # Need enough history for indicators
+            break
+
+        # Slice: all candles up to and including this candle
+        slice_df = df.iloc[:idx + 1].copy()
+        if len(slice_df) < 50:
+            continue
+
+        # Compute RSI
+        rsi_series = RSIIndicator(close=slice_df["close"], window=RSI_PERIOD).rsi().dropna()
+        if len(rsi_series) < 2:
+            continue
+        rsi_4h = float(rsi_series.iloc[-1])
+        rsi_prev = float(rsi_series.iloc[-2])
+
+        # Simple RSI signal (same logic as app.py compute_signal_base)
+        if rsi_prev < 40 and rsi_4h >= 40:
+            rsi_signal = "CTB"
+        elif rsi_prev > 60 and rsi_4h <= 60:
+            rsi_signal = "CTS"
+        elif rsi_4h <= 42:
+            rsi_signal = "BUY"
+        elif rsi_4h >= 58:
+            rsi_signal = "SELL"
+        else:
+            rsi_signal = "WAIT"
+
+        # Skip WAIT signals — not actionable
+        if rsi_signal == "WAIT":
+            continue
+
+        # Compute indicators for confluence
+        try:
+            md = calculate_macd(slice_df)
+            vd = calculate_volume_analysis(slice_df)
+            sk = calculate_stoch_rsi(slice_df)
+            ema_d = calculate_ema_alignment_fast(slice_df)
+            div_d = detect_rsi_divergence(slice_df)
+            nr_d_raw = detect_nr_pattern(slice_df)
+            nr_d = {"nr_level": nr_d_raw.get("nr_level"), "breakout": nr_d_raw.get("breakout"),
+                     "range_ratio": nr_d_raw.get("range_ratio", 1.0)} if nr_d_raw.get("nr_level") else None
+
+            individual = compute_individual_scores(
+                rsi_4h=rsi_4h, rsi_1d=50,  # 1D not available in single-TF backtest
+                macd_data=md, volume_data=vd, stoch_rsi_data=sk,
+                ema_data=ema_d, divergence_data=div_d, nr_data=nr_d,
+            )
+            scan_filters = {"rsi_4h": True, "rsi_1d": False, "macd": True, "volume_obv": True,
+                           "stoch_rsi": True, "ema_alignment": True, "rsi_divergence": True,
+                           "nr_breakout": True, "smart_money": False, "bollinger": False,
+                           "funding_rate": False, "fear_greed": False}
+            cf = compute_confluence_total(individual, scan_filters)
+            conf_score = cf["score"]
+            conf_rec = cf["recommendation"]
+        except Exception:
+            conf_score = 0
+            conf_rec = "N/A"
+
+        # Entry price = close of signal candle
+        entry_price = float(slice_df["close"].iloc[-1])
+        entry_time = slice_df.index[-1] if hasattr(slice_df.index[-1], 'strftime') else None
+
+        # Exit price = close `forward` candles later
+        exit_idx = idx + forward
+        if exit_idx >= len(df):
+            continue
+        exit_price = float(df["close"].iloc[exit_idx])
+
+        # P&L
+        pnl_pct = round((exit_price / entry_price - 1) * 100, 2)
+
+        # Was the signal correct?
+        is_bullish = rsi_signal in ("BUY", "CTB")
+        if is_bullish:
+            correct = pnl_pct > 0
+        else:  # SELL/CTS
+            correct = pnl_pct < 0
+
+        # Candle timestamp (approximate)
+        try:
+            ts = pd.to_datetime(slice_df["timestamp"].iloc[-1]) if "timestamp" in slice_df.columns else None
+        except Exception:
+            ts = None
+
+        results.append({
+            "candle_idx": idx,
+            "timestamp": ts,
+            "rsi_4h": round(rsi_4h, 1),
+            "rsi_signal": rsi_signal,
+            "conf_score": conf_score,
+            "conf_rec": conf_rec,
+            "entry_price": entry_price,
+            "exit_price": exit_price,
+            "pnl_pct": pnl_pct,
+            "correct": correct,
+            "forward_candles": forward,
+        })
+
+    return results
+
+
 def generate_nr_chart(df: pd.DataFrame, symbol: str, nr_data: dict) -> bytes:
     """
     Generate a candlestick chart with NR box overlay, breakout levels, and signals.
