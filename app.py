@@ -1,7 +1,7 @@
 """
 🧙‍♂️ Merlin Crypto Scanner — CryptoWaves-style RSI Dashboard
 """
-import time, json, base64
+import time, json, base64, os
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
@@ -24,6 +24,7 @@ from indicators import (
     calculate_ema_alignment_fast, detect_rsi_divergence, calculate_bb_squeeze,
     compute_individual_scores, compute_confluence_total, compute_alert_priority,
     detect_nr_pattern, nr_confluence_score, generate_nr_chart,
+    backtest_signals,
 )
 from alerts import check_and_send_alerts
 
@@ -191,16 +192,101 @@ st.markdown(f"""<style>
 </style>""", unsafe_allow_html=True)
 
 # ============================================================
+# CUSTOM COINS — Persistent JSON storage
+# ============================================================
+CUSTOM_COINS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "custom_coins.json")
+
+def load_custom_coins() -> list:
+    """Load custom coins from JSON file. Survives page reloads."""
+    try:
+        if os.path.exists(CUSTOM_COINS_FILE):
+            with open(CUSTOM_COINS_FILE, "r") as f:
+                data = json.load(f)
+                return list(data) if isinstance(data, list) else []
+    except Exception:
+        pass
+    return []
+
+def save_custom_coins(coins: list):
+    """Save custom coins to JSON file."""
+    try:
+        # Deduplicate, uppercase, strip
+        clean = list(dict.fromkeys(c.strip().upper() for c in coins if c.strip()))
+        with open(CUSTOM_COINS_FILE, "w") as f:
+            json.dump(clean, f, indent=2)
+    except Exception as e:
+        st.warning(f"Fehler beim Speichern: {e}")
+
+# ============================================================
 # SIDEBAR
 # ============================================================
 with st.sidebar:
     st.markdown("## 🧙‍♂️ Settings")
-    coin_list_mode = st.radio("📋 Coins", ["CryptoWaves (107+)", "Top 100 Dynamic", "Extended (180+)"], index=0)
-    coin_source = {"CryptoWaves (107+)": CRYPTOWAVES_COINS, "Top 100 Dynamic": CRYPTOWAVES_COINS[:50],
-                   "Extended (180+)": TOP_COINS_EXTENDED}[coin_list_mode]
-    max_coins = st.slider("Max Coins", 20, 180, len(coin_source), 10)
+
+    # Load custom coins for display
+    _custom_coins = load_custom_coins()
+    _custom_label = f"⭐ Custom ({len(_custom_coins)})" if _custom_coins else "⭐ Custom (leer)"
+
+    coin_list_mode = st.radio("📋 Coins",
+        ["CryptoWaves (107+)", "Top 100 Dynamic", "Extended (180+)", _custom_label], index=0)
+
+    if coin_list_mode.startswith("⭐"):
+        coin_source = _custom_coins if _custom_coins else CRYPTOWAVES_COINS
+        if not _custom_coins:
+            st.warning("⚠️ Custom-Liste ist leer. Füge unten Coins hinzu oder wechsle zu einer anderen Liste.")
+    else:
+        coin_source = {"CryptoWaves (107+)": CRYPTOWAVES_COINS, "Top 100 Dynamic": CRYPTOWAVES_COINS[:50],
+                       "Extended (180+)": TOP_COINS_EXTENDED}[coin_list_mode]
+
+    max_coins = st.slider("Max Coins", 20, 250, min(len(coin_source), 180), 10)
     st.markdown("---")
 
+    # Custom Coins Management
+    with st.expander("⭐ Custom Coins verwalten", expanded=coin_list_mode.startswith("⭐")):
+        st.caption(f"**{len(_custom_coins)}** Coins gespeichert")
+
+        # Add single coin
+        new_coin = st.text_input("Coin hinzufügen:", placeholder="z.B. BTC, ETH, SOL", key="add_custom").strip().upper()
+        if st.button("➕ Hinzufügen", key="btn_add_custom") and new_coin:
+            coins_to_add = [c.strip() for c in new_coin.replace(" ", ",").split(",") if c.strip()]
+            updated = _custom_coins + [c.upper() for c in coins_to_add if c.upper() not in _custom_coins]
+            save_custom_coins(updated)
+            st.success(f"✅ {', '.join(coins_to_add)} hinzugefügt")
+            st.rerun()
+
+        # Quick import from presets
+        if st.button("📥 CryptoWaves-Liste importieren", key="import_cw"):
+            merged = list(dict.fromkeys(_custom_coins + CRYPTOWAVES_COINS))
+            save_custom_coins(merged)
+            st.success(f"✅ {len(CRYPTOWAVES_COINS)} Coins importiert")
+            st.rerun()
+
+        # Show current list with remove buttons
+        if _custom_coins:
+            st.markdown("**Aktuelle Liste:**")
+            # Show in rows of 4
+            remove_coins = []
+            cols_per_row = 4
+            for i in range(0, len(_custom_coins), cols_per_row):
+                cols = st.columns(cols_per_row)
+                for j, col in enumerate(cols):
+                    idx = i + j
+                    if idx < len(_custom_coins):
+                        with col:
+                            if st.button(f"❌ {_custom_coins[idx]}", key=f"rm_c_{idx}",
+                                        use_container_width=True):
+                                remove_coins.append(_custom_coins[idx])
+            if remove_coins:
+                updated = [c for c in _custom_coins if c not in remove_coins]
+                save_custom_coins(updated)
+                st.rerun()
+
+            # Clear all
+            if st.button("🗑️ Alle entfernen", key="clear_custom"):
+                save_custom_coins([])
+                st.rerun()
+
+    st.markdown("---")
     st.markdown("### 🔤 Schriftgröße")
     font_scale = st.select_slider("Text", options=[0.85, 0.9, 1.0, 1.1, 1.2, 1.3],
         value=st.session_state.get("font_scale", 1.0), format_func=lambda x: {0.85:"Klein",0.9:"Kompakt",1.0:"Normal",1.1:"Groß",1.2:"Sehr groß",1.3:"XXL"}[x], key="fs_slider")
@@ -674,8 +760,8 @@ wl_label = f"⭐ Watchlist ({wl_count})" if wl_count > 0 else "⭐ Watchlist"
 # ============================================================
 # TABS
 # ============================================================
-tab_alerts, tab_watch, tab_hm, tab_mc, tab_conf, tab_nr, tab_det = st.tabs([
-    f"🚨 24h Alerts {sct}🔴 {bct}🟢", wl_label, "🔥 RSI Heatmap", "📊 By Market Cap", "🎯 Confluence", "🔮 NR Breakout", "🔍 Detail"])
+tab_alerts, tab_watch, tab_hm, tab_mc, tab_conf, tab_nr, tab_hist, tab_det = st.tabs([
+    f"🚨 24h Alerts {sct}🔴 {bct}🟢", wl_label, "🔥 RSI Heatmap", "📊 By Market Cap", "🎯 Confluence", "🔮 NR Breakout", "📊 Signal History", "🔍 Detail"])
 
 # Auto-switch to Detail tab when requested
 if st.session_state.pop("_go_detail", False):
@@ -1167,7 +1253,127 @@ with tab_nr:
                         st.warning(f"Keine ausreichenden Klines für {sym}.")
 
 # ============================================================
-# TAB 6: DETAIL — Complete Analysis Dashboard
+# TAB 7: SIGNAL HISTORY — Backtest past signals
+# ============================================================
+with tab_hist:
+    st.markdown("### 📊 Signal History — Backtest")
+    st.caption("Simuliert vergangene RSI-Signale auf 4h-Klines und prüft, ob der Preis in die vorhergesagte Richtung ging.")
+
+    hc1, hc2, hc3 = st.columns([2, 1, 1])
+    with hc1:
+        # Show only coins with active signals or let user pick any
+        signal_coins = df[df["signal"] != "WAIT"]["symbol"].tolist() if not df.empty else []
+        all_coins = df["symbol"].tolist() if not df.empty else []
+        hist_coin = st.selectbox("Coin auswählen:", all_coins,
+                                 index=all_coins.index(signal_coins[0]) if signal_coins else 0,
+                                 key="hist_coin")
+    with hc2:
+        hist_lookback = st.selectbox("Signale zurück:", [10, 15, 20, 30], index=2, key="hist_lb")
+    with hc3:
+        hist_forward = st.selectbox("Prüfen nach:", ["3 Kerzen (12h)", "6 Kerzen (24h)", "12 Kerzen (2d)"],
+                                    index=0, key="hist_fw")
+        fw_map = {"3 Kerzen (12h)": 3, "6 Kerzen (24h)": 6, "12 Kerzen (2d)": 12}
+        forward_candles = fw_map[hist_forward]
+
+    if hist_coin:
+        with st.spinner(f"⏳ Lade {hist_coin} 4h Klines für Backtest..."):
+            hist_df = fetch_klines_smart(hist_coin, "4h")
+
+        if not hist_df.empty and len(hist_df) >= hist_lookback + forward_candles + 50:
+            signals = backtest_signals(hist_df, lookback=hist_lookback, forward=forward_candles)
+
+            if signals:
+                # Summary stats
+                total = len(signals)
+                correct = sum(1 for s in signals if s["correct"])
+                wrong = total - correct
+                hit_rate = round(correct / total * 100, 1) if total > 0 else 0
+
+                buy_signals = [s for s in signals if s["rsi_signal"] in ("BUY", "CTB")]
+                sell_signals = [s for s in signals if s["rsi_signal"] in ("SELL", "CTS")]
+                buy_correct = sum(1 for s in buy_signals if s["correct"])
+                sell_correct = sum(1 for s in sell_signals if s["correct"])
+                buy_rate = round(buy_correct / len(buy_signals) * 100, 1) if buy_signals else 0
+                sell_rate = round(sell_correct / len(sell_signals) * 100, 1) if sell_signals else 0
+
+                # Confluence-aligned signals (RSI + Confluence same direction)
+                aligned = [s for s in signals if
+                    (s["rsi_signal"] in ("BUY","CTB") and s["conf_score"] > 0) or
+                    (s["rsi_signal"] in ("SELL","CTS") and s["conf_score"] < 0)]
+                aligned_correct = sum(1 for s in aligned if s["correct"])
+                aligned_rate = round(aligned_correct / len(aligned) * 100, 1) if aligned else 0
+
+                # Conflicting signals
+                conflicting = [s for s in signals if
+                    (s["rsi_signal"] in ("BUY","CTB") and s["conf_score"] < 0) or
+                    (s["rsi_signal"] in ("SELL","CTS") and s["conf_score"] > 0)]
+                conflict_correct = sum(1 for s in conflicting if s["correct"])
+                conflict_rate = round(conflict_correct / len(conflicting) * 100, 1) if conflicting else 0
+
+                # Display stats
+                hr_color = "#00FF7F" if hit_rate >= 60 else ("#FFD700" if hit_rate >= 45 else "#FF6347")
+                st.markdown(f"""<div style="background:#1a1a2e;border-radius:10px;padding:16px;margin:8px 0;">
+<div style="display:flex;justify-content:space-around;flex-wrap:wrap;gap:10px;text-align:center;">
+<div><div style="color:#888;font-size:12px;">Gesamt</div><div style="color:white;font-size:24px;font-weight:bold;">{total}</div><div style="color:#888;font-size:11px;">Signale</div></div>
+<div><div style="color:#888;font-size:12px;">Trefferquote</div><div style="color:{hr_color};font-size:24px;font-weight:bold;">{hit_rate}%</div><div style="color:#888;font-size:11px;">{correct}✅ {wrong}❌</div></div>
+<div><div style="color:#888;font-size:12px;">BUY/CTB</div><div style="color:#00FF7F;font-size:24px;font-weight:bold;">{buy_rate}%</div><div style="color:#888;font-size:11px;">{buy_correct}/{len(buy_signals)}</div></div>
+<div><div style="color:#888;font-size:12px;">SELL/CTS</div><div style="color:#FF6347;font-size:24px;font-weight:bold;">{sell_rate}%</div><div style="color:#888;font-size:11px;">{sell_correct}/{len(sell_signals)}</div></div>
+</div></div>""", unsafe_allow_html=True)
+
+                # Key insight: Aligned vs Conflicting
+                if aligned or conflicting:
+                    st.markdown(f"""<div style="background:#12121f;border-radius:10px;padding:12px;margin:8px 0;border-left:4px solid #FFD700;">
+<div style="color:#FFD700;font-size:13px;font-weight:bold;margin-bottom:6px;">💡 RSI ↔ Confluence Vergleich</div>
+<div style="display:flex;gap:20px;flex-wrap:wrap;">
+<div style="color:#888;font-size:12px;">RSI + Confluence <b style="color:#00FF7F;">aligned</b>: <b style="color:white;">{aligned_rate}%</b> Trefferquote ({len(aligned)} Signale)</div>
+<div style="color:#888;font-size:12px;">RSI + Confluence <b style="color:#FF6347;">gegeneinander</b>: <b style="color:white;">{conflict_rate}%</b> Trefferquote ({len(conflicting)} Signale)</div>
+</div></div>""", unsafe_allow_html=True)
+
+                # Signal table
+                st.markdown("---")
+                st.markdown("#### Einzelne Signale")
+                for i, sig in enumerate(signals):
+                    is_bull = sig["rsi_signal"] in ("BUY", "CTB")
+                    sig_c = "#00FF7F" if is_bull else "#FF6347"
+                    pnl_c = "#00FF7F" if sig["pnl_pct"] > 0 else ("#FF6347" if sig["pnl_pct"] < 0 else "#888")
+                    result_icon = "✅" if sig["correct"] else "❌"
+
+                    # Confluence alignment indicator
+                    if (is_bull and sig["conf_score"] > 0) or (not is_bull and sig["conf_score"] < 0):
+                        align_badge = '<span style="color:#00FF7F;font-size:10px;">● aligned</span>'
+                    elif (is_bull and sig["conf_score"] < 0) or (not is_bull and sig["conf_score"] > 0):
+                        align_badge = '<span style="color:#FF6347;font-size:10px;">● Konflikt</span>'
+                    else:
+                        align_badge = '<span style="color:#888;font-size:10px;">● neutral</span>'
+
+                    conf_c = "#00FF7F" if sig["conf_score"] > 10 else ("#FF6347" if sig["conf_score"] < -10 else "#888")
+
+                    st.markdown(f"""<div style="background:#1a1a2e;border-radius:8px;padding:8px 14px;margin:3px 0;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;border-left:4px solid {sig_c};">
+<div style="min-width:200px;">
+<span style="color:{sig_c};font-weight:bold;font-size:14px;">{sig["rsi_signal"]}</span>
+<span style="color:#888;font-size:11px;margin-left:6px;">RSI: {sig["rsi_4h"]}</span>
+<span style="color:{conf_c};font-size:11px;margin-left:6px;">Conf: {sig["conf_score"]:+d} {sig["conf_rec"]}</span>
+{align_badge}
+</div>
+<div style="color:#888;font-size:11px;">
+Entry: <b style="color:white;">{fp(sig["entry_price"])}</b> → Exit: <b style="color:white;">{fp(sig["exit_price"])}</b>
+</div>
+<div style="text-align:right;min-width:100px;">
+<span style="color:{pnl_c};font-size:14px;font-weight:bold;">{sig["pnl_pct"]:+.2f}%</span>
+<span style="font-size:16px;margin-left:4px;">{result_icon}</span>
+</div>
+</div>""", unsafe_allow_html=True)
+
+                st.caption(f"⏱️ Zeitraum: letzte {hist_lookback} Signale · Ergebnis gemessen nach {forward_candles} Kerzen ({forward_candles*4}h)")
+            else:
+                st.info(f"Keine aktiven Signale (BUY/SELL/CTB/CTS) in den letzten {hist_lookback} Kerzen für {hist_coin}.")
+        else:
+            needed = hist_lookback + forward_candles + 50
+            got = len(hist_df) if not hist_df.empty else 0
+            st.warning(f"Nicht genug Kline-Daten für {hist_coin}. Benötigt: {needed} Kerzen, vorhanden: {got}.")
+
+# ============================================================
+# TAB 8: DETAIL — Complete Analysis Dashboard
 # ============================================================
 with tab_det:
     sel=st.selectbox("Select Coin",df["symbol"].tolist(),key="dc")
@@ -1743,4 +1949,3 @@ with tab_det:
 
 st.markdown("---")
 st.markdown(f"<div style='text-align:center;color:#555;font-size:11px;'>🧙‍♂️ Merlin | {len(coins_to_scan)}×{len(tf_to_scan)}TF | {ex_display} | BUY≤42 SELL≥58 | DYOR!</div>",unsafe_allow_html=True)
-
