@@ -1266,6 +1266,266 @@ def backtest_signals(df: pd.DataFrame, lookback: int = 20, forward: int = 3) -> 
     return results
 
 
+def generate_confluence_chart(df: pd.DataFrame, symbol: str, active_filters: dict, score: int = 0, rec: str = "") -> bytes:
+    """
+    Generate a multi-panel chart showing all active confluence indicators.
+    Panels (top→bottom): Price+overlays, Volume, RSI/StochRSI, MACD.
+    Only panels for active filters are drawn.
+
+    Returns PNG bytes.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Rectangle
+    from ta.momentum import RSIIndicator, StochRSIIndicator
+    from ta.trend import MACD as MACD_IND, EMAIndicator
+    from ta.volatility import BollingerBands
+    import io
+
+    if df.empty or len(df) < 30:
+        return b""
+
+    plot_df = df.tail(60).copy().reset_index(drop=True)
+    n = len(plot_df)
+    xs = list(range(n))
+
+    # ── Determine which sub-panels to draw ──
+    show_vol = active_filters.get("volume_obv", False)
+    show_rsi = active_filters.get("rsi_4h", False) or active_filters.get("stoch_rsi", False)
+    show_macd = active_filters.get("macd", False)
+
+    panels = ["price"]
+    if show_vol:   panels.append("vol")
+    if show_rsi:   panels.append("rsi")
+    if show_macd:  panels.append("macd")
+
+    # Height ratios: price=3, others=1
+    ratios = [3] + [1] * (len(panels) - 1)
+    total_h = 5 + 1.6 * (len(panels) - 1)
+
+    fig, axes = plt.subplots(len(panels), 1, figsize=(14, total_h),
+                             gridspec_kw={"height_ratios": ratios},
+                             sharex=True, facecolor="#0e0e1a")
+    if len(panels) == 1:
+        axes = [axes]
+
+    for ax in axes:
+        ax.set_facecolor("#0e0e1a")
+        ax.tick_params(colors="#555", labelsize=7)
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        ax.spines["left"].set_color("#222")
+        ax.spines["bottom"].set_color("#222")
+        ax.grid(axis="y", color="#1a1a2e", linewidth=0.5)
+
+    ax_price = axes[0]
+    candle_w = min(0.7, max(0.3, 28 / n))
+
+    # ═══════════════════════════════════════
+    # PANEL 1: PRICE — Candlesticks + overlays
+    # ═══════════════════════════════════════
+    opens = plot_df["open"].values
+    highs = plot_df["high"].values
+    lows = plot_df["low"].values
+    closes = plot_df["close"].values
+    price_min, price_max = lows.min(), highs.max()
+    price_range = price_max - price_min or price_max * 0.01
+
+    for i in range(n):
+        c = "#26a69a" if closes[i] >= opens[i] else "#ef5350"
+        ax_price.plot([i, i], [lows[i], highs[i]], color="#555", linewidth=0.6)
+        bh = abs(closes[i] - opens[i])
+        if bh < price_range * 0.002:
+            bh = price_range * 0.002
+        bb = min(opens[i], closes[i])
+        ax_price.add_patch(Rectangle((i - candle_w/2, bb), candle_w, bh, fc=c, ec=c, lw=0.5))
+
+    ax_price.set_xlim(-1, n + 2)
+    ax_price.set_ylim(price_min - price_range * 0.03, price_max + price_range * 0.08)
+    ax_price.yaxis.tick_right()
+
+    # ── EMA overlays ──
+    if active_filters.get("ema_alignment", False) and len(plot_df) >= 50:
+        for period, color, label in [(9, "#FF9800", "EMA 9"), (21, "#2196F3", "EMA 21"), (50, "#E040FB", "EMA 50")]:
+            if len(plot_df) >= period:
+                ema = EMAIndicator(close=plot_df["close"], window=period).ema_indicator()
+                ax_price.plot(xs, ema.values, color=color, linewidth=0.9, alpha=0.8, label=label)
+
+    # ── Bollinger Bands ──
+    if active_filters.get("bollinger", False) and len(plot_df) >= 20:
+        bb = BollingerBands(close=plot_df["close"], window=20, window_dev=2)
+        ax_price.plot(xs, bb.bollinger_hband().values, color="#787b86", linewidth=0.6, linestyle="--", alpha=0.6)
+        ax_price.plot(xs, bb.bollinger_lband().values, color="#787b86", linewidth=0.6, linestyle="--", alpha=0.6)
+        ax_price.fill_between(xs, bb.bollinger_hband().values, bb.bollinger_lband().values,
+                             color="#787b86", alpha=0.05)
+        ax_price.plot(xs, bb.bollinger_mavg().values, color="#787b86", linewidth=0.5, alpha=0.4)
+
+    # ── NR Breakout Box ──
+    if active_filters.get("nr_breakout", False):
+        nr = detect_nr_pattern(plot_df)
+        if nr.get("nr_level"):
+            bh = nr["box_high"]; bl = nr["box_low"]
+            nr_c_map = {"NR4": "#66bb6a", "NR7": "#ffee58", "NR10": "#ff9800"}
+            nr_c = nr_c_map.get(nr["nr_level"], "#ffee58")
+            # Find NR candle
+            nr_idx = n - 2
+            for i in range(n-1, -1, -1):
+                if abs(highs[i] - bh) < bh * 0.002 and abs(lows[i] - bl) < bl * 0.002:
+                    nr_idx = i; break
+            bx_start = max(0, nr_idx - 5)
+            ax_price.add_patch(Rectangle((bx_start - 0.5, bl), nr_idx - bx_start + 1, bh - bl,
+                                         fc=nr_c, alpha=0.15, ec="none"))
+            ax_price.hlines(bh, nr_idx, n+1, colors="#787b86", linewidths=0.8, linestyles="solid")
+            ax_price.hlines(bl, nr_idx, n+1, colors="#787b86", linewidths=0.8, linestyles="solid")
+            ax_price.text(bx_start, bh + price_range * 0.01, nr["nr_level"],
+                         color=nr_c, fontsize=9, fontweight="bold")
+
+    # ── Divergence arrows ──
+    if active_filters.get("rsi_divergence", False):
+        div_res = detect_rsi_divergence(plot_df)
+        if div_res["divergence"] == "BULLISH":
+            ax_price.annotate("▲ DIV", (n-3, lows[-3] - price_range * 0.03),
+                             fontsize=9, color="#00FF7F", ha="center", fontweight="bold")
+        elif div_res["divergence"] == "BEARISH":
+            ax_price.annotate("▼ DIV", (n-3, highs[-3] + price_range * 0.02),
+                             fontsize=9, color="#FF6347", ha="center", fontweight="bold")
+
+    # Current price line
+    ax_price.axhline(closes[-1], color="white", linewidth=0.4, linestyle=":", alpha=0.3)
+    ax_price.text(n + 0.3, closes[-1], f" {closes[-1]:.4g}", color="white", fontsize=7,
+                 va="center", fontweight="bold",
+                 bbox=dict(boxstyle="round,pad=0.15", fc="#333", ec="none"))
+
+    # Legend
+    if active_filters.get("ema_alignment", False):
+        ax_price.legend(loc="upper left", fontsize=7, framealpha=0.3,
+                       facecolor="#1a1a2e", edgecolor="none", labelcolor="#aaa")
+
+    # Title
+    sc_c = "#00FF7F" if score > 0 else ("#FF6347" if score < 0 else "#FFD700")
+    ax_price.set_title(f"{symbol} · 4h Confluence · {rec} ({score:+d})",
+                       color="white", fontsize=12, fontweight="bold", pad=8)
+
+    panel_idx = 1  # next available panel
+
+    # ═══════════════════════════════════════
+    # PANEL 2: VOLUME (if active)
+    # ═══════════════════════════════════════
+    if show_vol and panel_idx < len(axes):
+        ax_vol = axes[panel_idx]; panel_idx += 1
+        vols = plot_df["volume"].values
+        colors_v = ["#26a69a" if closes[i] >= opens[i] else "#ef5350" for i in range(n)]
+        ax_vol.bar(xs, vols, width=candle_w, color=colors_v, alpha=0.7)
+
+        # Volume MA
+        if len(vols) >= 20:
+            vol_ma = pd.Series(vols).rolling(20).mean().values
+            ax_vol.plot(xs, vol_ma, color="#FFD700", linewidth=0.8, alpha=0.6, label="Vol MA20")
+
+        # OBV overlay (right axis)
+        obv = [0.0]
+        for i in range(1, n):
+            if closes[i] > closes[i-1]:
+                obv.append(obv[-1] + vols[i])
+            elif closes[i] < closes[i-1]:
+                obv.append(obv[-1] - vols[i])
+            else:
+                obv.append(obv[-1])
+        ax_obv = ax_vol.twinx()
+        ax_obv.plot(xs, obv, color="#2196F3", linewidth=0.8, alpha=0.7, label="OBV")
+        ax_obv.tick_params(colors="#555", labelsize=6)
+        ax_obv.spines["right"].set_color("#222")
+        ax_obv.spines["top"].set_visible(False)
+
+        ax_vol.set_ylabel("Vol", fontsize=7, color="#555")
+        ax_vol.yaxis.tick_right()
+        ax_vol.yaxis.set_label_position("left")
+
+    # ═══════════════════════════════════════
+    # PANEL 3: RSI + StochRSI (if active)
+    # ═══════════════════════════════════════
+    if show_rsi and panel_idx < len(axes):
+        ax_rsi = axes[panel_idx]; panel_idx += 1
+
+        if active_filters.get("rsi_4h", False):
+            rsi = RSIIndicator(close=plot_df["close"], window=14).rsi()
+            ax_rsi.plot(xs, rsi.values, color="#E040FB", linewidth=1.2, label="RSI 14")
+
+        if active_filters.get("stoch_rsi", False) and len(plot_df) >= 20:
+            stoch = StochRSIIndicator(close=plot_df["close"], window=14, smooth1=3, smooth2=3)
+            k_vals = stoch.stochrsi_k() * 100
+            d_vals = stoch.stochrsi_d() * 100
+            ax_rsi.plot(xs, k_vals.values, color="#FF9800", linewidth=0.8, alpha=0.7, label="StochK")
+            ax_rsi.plot(xs, d_vals.values, color="#2196F3", linewidth=0.8, alpha=0.7, label="StochD")
+
+        # Zones
+        ax_rsi.axhline(70, color="#FF6347", linewidth=0.5, linestyle="--", alpha=0.4)
+        ax_rsi.axhline(30, color="#00FF7F", linewidth=0.5, linestyle="--", alpha=0.4)
+        ax_rsi.axhline(50, color="#555", linewidth=0.3, linestyle=":", alpha=0.3)
+        ax_rsi.fill_between(xs, 70, 100, color="#FF6347", alpha=0.04)
+        ax_rsi.fill_between(xs, 0, 30, color="#00FF7F", alpha=0.04)
+        ax_rsi.set_ylim(0, 100)
+        ax_rsi.set_ylabel("RSI", fontsize=7, color="#555")
+        ax_rsi.yaxis.tick_right()
+        ax_rsi.yaxis.set_label_position("left")
+        ax_rsi.legend(loc="upper left", fontsize=6, framealpha=0.3,
+                     facecolor="#1a1a2e", edgecolor="none", labelcolor="#aaa")
+
+    # ═══════════════════════════════════════
+    # PANEL 4: MACD (if active)
+    # ═══════════════════════════════════════
+    if show_macd and panel_idx < len(axes):
+        ax_macd = axes[panel_idx]; panel_idx += 1
+
+        if len(plot_df) >= 35:
+            macd_ind = MACD_IND(close=plot_df["close"], window_slow=26, window_fast=12, window_sign=9)
+            macd_line = macd_ind.macd()
+            signal_line = macd_ind.macd_signal()
+            histogram = macd_ind.macd_diff()
+
+            ax_macd.plot(xs, macd_line.values, color="#2196F3", linewidth=1.0, label="MACD")
+            ax_macd.plot(xs, signal_line.values, color="#FF9800", linewidth=0.8, label="Signal")
+
+            # Histogram bars colored by direction
+            for i in range(n):
+                h_val = histogram.iloc[i]
+                if np.isnan(h_val):
+                    continue
+                prev_h = histogram.iloc[i-1] if i > 0 and not np.isnan(histogram.iloc[i-1]) else 0
+                if h_val >= 0:
+                    c = "#26a69a" if h_val >= prev_h else "#26a69a80"
+                else:
+                    c = "#ef5350" if h_val <= prev_h else "#ef535080"
+                ax_macd.bar(i, h_val, width=candle_w, color=c, alpha=0.7)
+
+            ax_macd.axhline(0, color="#555", linewidth=0.3)
+            ax_macd.set_ylabel("MACD", fontsize=7, color="#555")
+            ax_macd.yaxis.tick_right()
+            ax_macd.yaxis.set_label_position("left")
+            ax_macd.legend(loc="upper left", fontsize=6, framealpha=0.3,
+                          facecolor="#1a1a2e", edgecolor="none", labelcolor="#aaa")
+
+    # ── X-axis cleanup ──
+    axes[-1].set_xticks([])
+
+    # ── Active filter label at bottom ──
+    filter_names = {"rsi_4h": "RSI", "rsi_1d": "RSI 1D", "macd": "MACD", "volume_obv": "Volume+OBV",
+                    "stoch_rsi": "StochRSI", "ema_alignment": "EMA", "rsi_divergence": "Divergenz",
+                    "nr_breakout": "NR", "bollinger": "BB", "smart_money": "SMC",
+                    "funding_rate": "Funding", "fear_greed": "F&G"}
+    active_names = [filter_names.get(k, k) for k, v in active_filters.items() if v]
+    fig.text(0.5, 0.01, " · ".join(active_names), ha="center", fontsize=7, color="#555")
+
+    plt.tight_layout(h_pad=0.5)
+    plt.subplots_adjust(bottom=0.04)
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=130, bbox_inches="tight", facecolor="#0e0e1a")
+    plt.close(fig)
+    buf.seek(0)
+    return buf.getvalue()
+
+
 def generate_nr_chart(df: pd.DataFrame, symbol: str, nr_data: dict) -> bytes:
     """
     Generate a candlestick chart with NR box overlay, breakout levels, and signals.
