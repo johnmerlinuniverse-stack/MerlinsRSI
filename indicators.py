@@ -1407,3 +1407,4 @@ def generate_nr_chart(df: pd.DataFrame, symbol: str, nr_data: dict) -> bytes:
     plt.close(fig)
     buf.seek(0)
     return buf.getvalue()
+
