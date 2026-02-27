@@ -24,7 +24,7 @@ from indicators import (
     calculate_ema_alignment_fast, detect_rsi_divergence, calculate_bb_squeeze,
     compute_individual_scores, compute_confluence_total, compute_alert_priority,
     detect_nr_pattern, nr_confluence_score, generate_nr_chart,
-    backtest_signals,
+    backtest_signals, generate_confluence_chart,
 )
 from alerts import check_and_send_alerts
 
@@ -1111,11 +1111,11 @@ with tab_conf:
         st.info("Keine Buy-Signale mit den aktuellen Filtern.")
     else:
         for _, r in buy_df.iterrows():
-            s = r["dyn_score"]; rec = r["dyn_rec"]
+            s = r["dyn_score"]; rec = r["dyn_rec"]; sym = r["symbol"]
             glow = "text-shadow:0 0 6px #00FF7F;" if s >= 60 else ""
             st.markdown(f'''<div style="background:#1a1a2e;border-radius:8px;padding:10px 14px;margin:4px 0;">
 <div style="display:flex;justify-content:space-between;align-items:center;">
-<b style="color:white;">{r["symbol"]}</b>
+<b style="color:white;">{sym}</b>
 <span style="color:#00FF7F;font-weight:bold;{glow}">{rec} ({s})</span>
 </div>
 <div style="background:#2a2a4a;border-radius:4px;height:6px;margin-top:6px;">
@@ -1123,6 +1123,18 @@ with tab_conf:
 </div>
 <div style="font-size:11px;color:#888;margin-top:4px;">{r.get("dyn_reasons","")}</div>
 </div>''', unsafe_allow_html=True)
+            # Chart button
+            if st.button(f"📊 Chart — {sym}", key=f"conf_chart_buy_{sym}"):
+                with st.spinner(f"Lade {sym} Confluence Chart..."):
+                    chart_df = fetch_klines_smart(sym, "4h")
+                    if not chart_df.empty and len(chart_df) >= 30:
+                        chart_bytes = generate_confluence_chart(chart_df, sym, active_filters, s, rec)
+                        if chart_bytes:
+                            st.image(chart_bytes, use_container_width=True)
+                        else:
+                            st.warning("Chart konnte nicht generiert werden.")
+                    else:
+                        st.warning(f"Nicht genug Daten für {sym}.")
 
     st.markdown("---")
 
@@ -1133,11 +1145,11 @@ with tab_conf:
         st.info("Keine Sell-Signale mit den aktuellen Filtern.")
     else:
         for _, r in sell_df.iterrows():
-            s = r["dyn_score"]; rec = r["dyn_rec"]
+            s = r["dyn_score"]; rec = r["dyn_rec"]; sym = r["symbol"]
             glow = "text-shadow:0 0 6px #FF6347;" if s <= -60 else ""
             st.markdown(f'''<div style="background:#1a1a2e;border-radius:8px;padding:10px 14px;margin:4px 0;">
 <div style="display:flex;justify-content:space-between;align-items:center;">
-<b style="color:white;">{r["symbol"]}</b>
+<b style="color:white;">{sym}</b>
 <span style="color:#FF6347;font-weight:bold;{glow}">{rec} ({s})</span>
 </div>
 <div style="background:#2a2a4a;border-radius:4px;height:6px;margin-top:6px;">
@@ -1145,6 +1157,18 @@ with tab_conf:
 </div>
 <div style="font-size:11px;color:#888;margin-top:4px;">{r.get("dyn_reasons","")}</div>
 </div>''', unsafe_allow_html=True)
+            # Chart button
+            if st.button(f"📊 Chart — {sym}", key=f"conf_chart_sell_{sym}"):
+                with st.spinner(f"Lade {sym} Confluence Chart..."):
+                    chart_df = fetch_klines_smart(sym, "4h")
+                    if not chart_df.empty and len(chart_df) >= 30:
+                        chart_bytes = generate_confluence_chart(chart_df, sym, active_filters, s, rec)
+                        if chart_bytes:
+                            st.image(chart_bytes, use_container_width=True)
+                        else:
+                            st.warning("Chart konnte nicht generiert werden.")
+                    else:
+                        st.warning(f"Nicht genug Daten für {sym}.")
 
 # ============================================================
 # TAB 5: NR BREAKOUT SCANNER
