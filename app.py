@@ -185,8 +185,15 @@ st.markdown(f"""<style>
 .crow .rsi-row{{display:flex;gap:6px;margin-top:3px;flex-wrap:wrap}}.crow .rsi-pill{{font-size:calc(11px * var(--fz));padding:1px 5px;border-radius:4px;background:#1e1e3a}}
 .cp{{color:#00FF7F}}.cm{{color:#FF6347}}
 #MainMenu,footer,header{{visibility:hidden}}
-.stButton>button{{padding:2px 10px !important;font-size:calc(12px * var(--fz)) !important;height:auto !important;min-height:0 !important;background:#12121f !important;color:#888 !important;border:1px solid #2a2a4a !important;border-radius:4px !important;margin-top:-6px !important}}
+.stButton>button{{padding:2px 8px !important;font-size:calc(11px * var(--fz)) !important;height:28px !important;min-height:0 !important;background:#12121f !important;color:#888 !important;border:1px solid #2a2a4a !important;border-radius:4px !important;margin:0 !important;line-height:1 !important}}
 .stButton>button:hover{{color:#FFD700 !important;border-color:#FFD700 !important}}
+/* Force button columns inline on ALL screen sizes including mobile */
+[data-testid="stHorizontalBlock"]{{flex-wrap:nowrap !important;gap:4px !important}}
+@media(max-width:640px){{
+[data-testid="stHorizontalBlock"]{{flex-wrap:nowrap !important;gap:2px !important}}
+[data-testid="stHorizontalBlock"] [data-testid="stColumn"]{{flex:0 0 auto !important;width:auto !important;min-width:0 !important}}
+.stButton>button{{padding:2px 6px !important;font-size:10px !important;height:26px !important}}
+}}
 .stTabs [data-baseweb="tab-list"]{{gap:4px}}.stTabs [data-baseweb="tab"]{{border-radius:8px;padding:8px 16px;font-weight:600;font-size:calc(14px * var(--fz))}}
 @media(max-width:768px){{.block-container{{padding:.5rem}}.crow .charts{{display:none}}.crow .inf{{min-width:120px}}.crow .sig{{min-width:120px}}}}
 </style>""", unsafe_allow_html=True)
@@ -696,30 +703,30 @@ def crow_html(row, charts=True):
 </div></div>'''
 
 def render_rows_with_chart(dataframe, tab_key, max_rows=60):
-    """Render coin rows with inline chart button under each row."""
+    """Render coin rows with compact inline buttons."""
     chart_state_key = f"chart_{tab_key}"
     for _,row in dataframe.head(max_rows).iterrows():
         sym=row["symbol"]
         st.markdown(crow_html(row), unsafe_allow_html=True)
-        # Inline buttons: Chart + Detail + Watchlist (compact)
+        # Compact inline buttons: all 3 on one tight row
         in_wl = sym in st.session_state.get("_watchlist", set())
-        bc1, bc2, bc3, _ = st.columns([1, 1, 1, 8])
+        star_label = "★" if in_wl else "☆"
+        bc1, bc2, bc3, _ = st.columns([1, 1, 0.5, 10])
         with bc1:
-            if st.button(f"📈 Chart", key=f"btn_{tab_key}_{sym}", use_container_width=True):
+            if st.button("📈Chart", key=f"btn_{tab_key}_{sym}"):
                 if st.session_state.get(chart_state_key)==sym:
                     st.session_state[chart_state_key]=None
                 else:
                     st.session_state[chart_state_key]=sym
                 st.rerun()
         with bc2:
-            if st.button(f"🔍 Detail", key=f"det_{tab_key}_{sym}", use_container_width=True):
+            if st.button("🔍Detail", key=f"det_{tab_key}_{sym}"):
                 st.session_state["dc"] = sym
                 st.session_state["_go_detail"] = True
                 st.rerun()
         with bc3:
-            star_label = "⭐" if in_wl else "☆"
-            if st.button(star_label, key=f"wl_{tab_key}_{sym}", use_container_width=True,
-                        help="Aus Watchlist entfernen" if in_wl else "Zur Watchlist"):
+            if st.button(star_label, key=f"wl_{tab_key}_{sym}",
+                        help="Watchlist" if not in_wl else "Entfernen"):
                 if in_wl:
                     st.session_state["_watchlist"].discard(sym)
                 else:
