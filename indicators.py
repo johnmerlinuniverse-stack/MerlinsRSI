@@ -148,8 +148,6 @@ def calculate_smart_money_flow(
     3. Money Flow Ratio = sum(flow,N) / sum(|flow|,N) → net direction [-1,+1]
     4. Smoothed MF = EMA(MF_Ratio, smooth)
     5. Flow Strength = |smoothed|^power → nonlinear [0,1]
-
-    Returns: smf_value, smf_strength, smf_trend, smf_signal, smf_diverging
     """
     default = {
         "smf_value": 0.0, "smf_strength": 0.0,
@@ -158,73 +156,55 @@ def calculate_smart_money_flow(
     }
     if df.empty or len(df) < flow_window + flow_smooth + 5:
         return default
-
     try:
         high = df["high"].values
         low = df["low"].values
         close = df["close"].values
         volume = df["volume"].values
-
-        # Step 1: Close Location Value per bar
         bar_range = high - low
         safe_range = np.where(bar_range > 0, bar_range, 1.0)
         clv = ((close - low) - (high - close)) / safe_range
         clv = np.where(bar_range > 0, clv, 0.0)
-
-        # Step 2: Raw flow = CLV × volume
         raw_flow = clv * volume
-
-        # Step 3: Money Flow Ratio over rolling window
         raw_series = pd.Series(raw_flow)
         numerator = raw_series.rolling(flow_window).sum()
         denominator = raw_series.abs().rolling(flow_window).sum()
         mf_ratio = np.where(denominator > 0, numerator / denominator, 0.0)
         mf_series = pd.Series(mf_ratio, index=df.index)
-
-        # Step 4: Smooth with EMA
         mf_smooth = mf_series.ewm(span=flow_smooth, adjust=False).mean()
-
-        # Step 5: Flow strength (nonlinear)
         current_mf = float(mf_smooth.iloc[-1])
         strength = min(1.0, max(0.0, abs(current_mf) ** flow_power))
-
-        # Classify trend
-        if current_mf > 0.05:
-            trend = "BULLISH"
-        elif current_mf < -0.05:
-            trend = "BEARISH"
-        else:
-            trend = "NEUTRAL"
-
-        # Classify signal intensity
-        if current_mf > 0.4:
-            signal = "STRONG_ACCUMULATION"
-        elif current_mf > 0.1:
-            signal = "ACCUMULATION"
-        elif current_mf < -0.4:
-            signal = "STRONG_DISTRIBUTION"
-        elif current_mf < -0.1:
-            signal = "DISTRIBUTION"
-        else:
-            signal = "NEUTRAL"
-
-        # Smart Money Divergence: flow opposes recent price direction
+        trend = "BULLISH" if current_mf > 0.05 else ("BEARISH" if current_mf < -0.05 else "NEUTRAL")
+        if current_mf > 0.4: signal = "STRONG_ACCUMULATION"
+        elif current_mf > 0.1: signal = "ACCUMULATION"
+        elif current_mf < -0.4: signal = "STRONG_DISTRIBUTION"
+        elif current_mf < -0.1: signal = "DISTRIBUTION"
+        else: signal = "NEUTRAL"
         price_change_pct = (close[-1] / close[-flow_window] - 1) * 100 if close[-flow_window] > 0 else 0
         diverging = False
-        if price_change_pct < -2 and current_mf > 0.15:
-            diverging = True   # Price down but accumulation → bullish divergence
-        elif price_change_pct > 2 and current_mf < -0.15:
-            diverging = True   # Price up but distribution → bearish divergence
-
-        return {
-            "smf_value": round(current_mf, 4),
-            "smf_strength": round(strength, 4),
-            "smf_trend": trend,
-            "smf_signal": signal,
-            "smf_diverging": diverging,
-        }
+        if price_change_pct < -2 and current_mf > 0.15: diverging = True
+        elif price_change_pct > 2 and current_mf < -0.15: diverging = True
+        return {"smf_value": round(current_mf, 4), "smf_strength": round(strength, 4),
+                "smf_trend": trend, "smf_signal": signal, "smf_diverging": diverging}
     except Exception:
         return default
+
+
+def calculate_smf_series(df: pd.DataFrame, flow_window: int = 24, flow_smooth: int = 5) -> pd.Series:
+    """Return the full smoothed Money Flow Ratio series for chart plotting."""
+    if df.empty or len(df) < flow_window + flow_smooth + 5:
+        return pd.Series(dtype=float)
+    high = df["high"].values; low = df["low"].values
+    close = df["close"].values; volume = df["volume"].values
+    bar_range = high - low
+    safe_range = np.where(bar_range > 0, bar_range, 1.0)
+    clv = np.where(bar_range > 0, ((close - low) - (high - close)) / safe_range, 0.0)
+    raw_flow = clv * volume
+    raw_series = pd.Series(raw_flow)
+    numerator = raw_series.rolling(flow_window).sum()
+    denominator = raw_series.abs().rolling(flow_window).sum()
+    mf_ratio = pd.Series(np.where(denominator > 0, numerator / denominator, 0.0), index=df.index)
+    return mf_ratio.ewm(span=flow_smooth, adjust=False).mean()
 
 
 # ============================================================
@@ -702,12 +682,9 @@ def compute_individual_scores(
             s = -18; r = f"SMF starke Distribution ({smf_val:+.2f})"
         elif smf_sig == "DISTRIBUTION":
             s = -10; r = f"SMF Distribution ({smf_val:+.2f})"
-        # Divergence bonus: smart money opposes price → extra conviction
         if smf_div:
-            if smf_val > 0:
-                s += 7; r += " ⚡bullish Divergenz"
-            else:
-                s -= 7; r += " ⚡bearish Divergenz"
+            if smf_val > 0: s += 7; r += " ⚡bullish Divergenz"
+            else: s -= 7; r += " ⚡bearish Divergenz"
         s = max(-25, min(25, s))
     scores["smf"] = s
     reasons["smf"] = r
@@ -1397,8 +1374,14 @@ def backtest_signals(df: pd.DataFrame, lookback: int = 20, forward: int = 3) -> 
 def generate_confluence_chart(df: pd.DataFrame, symbol: str, active_filters: dict, score: int = 0, rec: str = "") -> bytes:
     """
     Generate a multi-panel chart showing all active confluence indicators.
-    Panels (top→bottom): Price+overlays, Volume, RSI/StochRSI, MACD.
-    Only panels for active filters are drawn.
+    Panels are dynamically created based on which filters are active.
+
+    Panel layout (only if active):
+      Price  — always shown (candlesticks + EMA + BB + NR + OB + Divergence)
+      Volume — if volume_obv active
+      SMF    — if smf active
+      RSI    — if rsi_4h or stoch_rsi active
+      MACD   — if macd active
 
     Returns PNG bytes.
     """
@@ -1419,12 +1402,14 @@ def generate_confluence_chart(df: pd.DataFrame, symbol: str, active_filters: dic
     xs = list(range(n))
 
     # ── Determine which sub-panels to draw ──
-    show_vol = active_filters.get("volume_obv", False)
-    show_rsi = active_filters.get("rsi_4h", False) or active_filters.get("stoch_rsi", False)
+    show_vol  = active_filters.get("volume_obv", False)
+    show_smf  = active_filters.get("smf", False)
+    show_rsi  = active_filters.get("rsi_4h", False) or active_filters.get("stoch_rsi", False)
     show_macd = active_filters.get("macd", False)
 
     panels = ["price"]
     if show_vol:   panels.append("vol")
+    if show_smf:   panels.append("smf")
     if show_rsi:   panels.append("rsi")
     if show_macd:  panels.append("macd")
 
@@ -1482,32 +1467,56 @@ def generate_confluence_chart(df: pd.DataFrame, symbol: str, active_filters: dic
 
     # ── Bollinger Bands ──
     if active_filters.get("bollinger", False) and len(plot_df) >= 20:
-        bb = BollingerBands(close=plot_df["close"], window=20, window_dev=2)
-        ax_price.plot(xs, bb.bollinger_hband().values, color="#787b86", linewidth=0.6, linestyle="--", alpha=0.6)
-        ax_price.plot(xs, bb.bollinger_lband().values, color="#787b86", linewidth=0.6, linestyle="--", alpha=0.6)
-        ax_price.fill_between(xs, bb.bollinger_hband().values, bb.bollinger_lband().values,
+        bba = BollingerBands(close=plot_df["close"], window=20, window_dev=2)
+        ax_price.plot(xs, bba.bollinger_hband().values, color="#787b86", linewidth=0.6, linestyle="--", alpha=0.6)
+        ax_price.plot(xs, bba.bollinger_lband().values, color="#787b86", linewidth=0.6, linestyle="--", alpha=0.6)
+        ax_price.fill_between(xs, bba.bollinger_hband().values, bba.bollinger_lband().values,
                              color="#787b86", alpha=0.05)
-        ax_price.plot(xs, bb.bollinger_mavg().values, color="#787b86", linewidth=0.5, alpha=0.4)
+        ax_price.plot(xs, bba.bollinger_mavg().values, color="#787b86", linewidth=0.5, alpha=0.4)
 
     # ── NR Breakout Box ──
     if active_filters.get("nr_breakout", False):
         nr = detect_nr_pattern(plot_df)
         if nr.get("nr_level"):
-            bh = nr["box_high"]; bl = nr["box_low"]
+            bh_nr = nr["box_high"]; bl_nr = nr["box_low"]
             nr_c_map = {"NR4": "#66bb6a", "NR7": "#ffee58", "NR10": "#ff9800"}
             nr_c = nr_c_map.get(nr["nr_level"], "#ffee58")
-            # Find NR candle
             nr_idx = n - 2
             for i in range(n-1, -1, -1):
-                if abs(highs[i] - bh) < bh * 0.002 and abs(lows[i] - bl) < bl * 0.002:
+                if abs(highs[i] - bh_nr) < bh_nr * 0.002 and abs(lows[i] - bl_nr) < bl_nr * 0.002:
                     nr_idx = i; break
             bx_start = max(0, nr_idx - 5)
-            ax_price.add_patch(Rectangle((bx_start - 0.5, bl), nr_idx - bx_start + 1, bh - bl,
+            ax_price.add_patch(Rectangle((bx_start - 0.5, bl_nr), nr_idx - bx_start + 1, bh_nr - bl_nr,
                                          fc=nr_c, alpha=0.15, ec="none"))
-            ax_price.hlines(bh, nr_idx, n+1, colors="#787b86", linewidths=0.8, linestyles="solid")
-            ax_price.hlines(bl, nr_idx, n+1, colors="#787b86", linewidths=0.8, linestyles="solid")
-            ax_price.text(bx_start, bh + price_range * 0.01, nr["nr_level"],
+            ax_price.hlines(bh_nr, nr_idx, n+1, colors="#787b86", linewidths=0.8, linestyles="solid")
+            ax_price.hlines(bl_nr, nr_idx, n+1, colors="#787b86", linewidths=0.8, linestyles="solid")
+            ax_price.text(bx_start, bh_nr + price_range * 0.01, nr["nr_level"],
                          color=nr_c, fontsize=9, fontweight="bold")
+
+    # ── Smart Money: Order Block zones on price panel ──
+    if active_filters.get("smart_money", False):
+        ob = detect_order_blocks(plot_df)
+        if ob.get("bullish_ob"):
+            ob_h = ob["bullish_ob"]["price_high"]; ob_l = ob["bullish_ob"]["price_low"]
+            ob_idx = ob["bullish_ob"].get("idx", n - 10)
+            ax_price.add_patch(Rectangle((max(0, ob_idx - 1), ob_l), n - ob_idx + 2, ob_h - ob_l,
+                                         fc="#00FF7F", alpha=0.08, ec="#00FF7F", lw=0.5, linestyle="--"))
+            ax_price.text(max(0, ob_idx - 1), ob_l - price_range * 0.01, "Bull OB",
+                         color="#00FF7F", fontsize=7, alpha=0.8)
+        if ob.get("bearish_ob"):
+            ob_h = ob["bearish_ob"]["price_high"]; ob_l = ob["bearish_ob"]["price_low"]
+            ob_idx = ob["bearish_ob"].get("idx", n - 10)
+            ax_price.add_patch(Rectangle((max(0, ob_idx - 1), ob_l), n - ob_idx + 2, ob_h - ob_l,
+                                         fc="#FF6347", alpha=0.08, ec="#FF6347", lw=0.5, linestyle="--"))
+            ax_price.text(max(0, ob_idx - 1), ob_h + price_range * 0.005, "Bear OB",
+                         color="#FF6347", fontsize=7, alpha=0.8)
+        # Market Structure label
+        ms = detect_market_structure(plot_df)
+        if ms.get("structure") and ms["structure"] != "UNKNOWN":
+            ms_c = "#00FF7F" if ms["structure"] == "BULLISH" else ("#FF6347" if ms["structure"] == "BEARISH" else "#FFD700")
+            ax_price.text(n + 0.5, price_max + price_range * 0.03,
+                         f'SMC: {ms["structure"]}' + (" BOS" if ms.get("break_of_structure") else ""),
+                         color=ms_c, fontsize=7, fontweight="bold", va="bottom")
 
     # ── Divergence arrows ──
     if active_filters.get("rsi_divergence", False):
@@ -1525,8 +1534,20 @@ def generate_confluence_chart(df: pd.DataFrame, symbol: str, active_filters: dic
                  va="center", fontweight="bold",
                  bbox=dict(boxstyle="round,pad=0.15", fc="#333", ec="none"))
 
+    # ── Info badges on price panel: Funding Rate + Fear & Greed ──
+    badge_y = price_max + price_range * 0.06
+    badge_x = 1
+    if active_filters.get("funding_rate", False):
+        ax_price.text(badge_x, badge_y, "FR", color="#FFD700", fontsize=7,
+                     bbox=dict(boxstyle="round,pad=0.2", fc="#1a1a2e", ec="#FFD700", lw=0.5), alpha=0.9)
+        badge_x += 6
+    if active_filters.get("fear_greed", False):
+        ax_price.text(badge_x, badge_y, "F&G", color="#FF9800", fontsize=7,
+                     bbox=dict(boxstyle="round,pad=0.2", fc="#1a1a2e", ec="#FF9800", lw=0.5), alpha=0.9)
+
     # Legend
-    if active_filters.get("ema_alignment", False):
+    has_legend = active_filters.get("ema_alignment", False)
+    if has_legend:
         ax_price.legend(loc="upper left", fontsize=7, framealpha=0.3,
                        facecolor="#1a1a2e", edgecolor="none", labelcolor="#aaa")
 
@@ -1538,7 +1559,7 @@ def generate_confluence_chart(df: pd.DataFrame, symbol: str, active_filters: dic
     panel_idx = 1  # next available panel
 
     # ═══════════════════════════════════════
-    # PANEL 2: VOLUME (if active)
+    # PANEL: VOLUME (if active)
     # ═══════════════════════════════════════
     if show_vol and panel_idx < len(axes):
         ax_vol = axes[panel_idx]; panel_idx += 1
@@ -1571,7 +1592,67 @@ def generate_confluence_chart(df: pd.DataFrame, symbol: str, active_filters: dic
         ax_vol.yaxis.set_label_position("left")
 
     # ═══════════════════════════════════════
-    # PANEL 3: RSI + StochRSI (if active)
+    # PANEL: SMART MONEY FLOW (if active)
+    # ═══════════════════════════════════════
+    if show_smf and panel_idx < len(axes):
+        ax_smf = axes[panel_idx]; panel_idx += 1
+
+        smf_series = calculate_smf_series(plot_df)
+        if not smf_series.empty and len(smf_series) == n:
+            smf_vals = smf_series.values
+
+            # Flow line
+            ax_smf.plot(xs, smf_vals, color="#E040FB", linewidth=1.2, label="SMF")
+
+            # Zero line
+            ax_smf.axhline(0, color="#555", linewidth=0.4, linestyle="-")
+
+            # Accumulation / Distribution zones
+            ax_smf.axhline(0.4, color="#00FF7F", linewidth=0.4, linestyle="--", alpha=0.4)
+            ax_smf.axhline(0.1, color="#00FF7F", linewidth=0.3, linestyle=":", alpha=0.3)
+            ax_smf.axhline(-0.1, color="#FF6347", linewidth=0.3, linestyle=":", alpha=0.3)
+            ax_smf.axhline(-0.4, color="#FF6347", linewidth=0.4, linestyle="--", alpha=0.4)
+
+            # Fill accumulation green, distribution red
+            ax_smf.fill_between(xs, smf_vals, 0,
+                               where=[v > 0 for v in smf_vals],
+                               color="#00FF7F", alpha=0.15, interpolate=True)
+            ax_smf.fill_between(xs, smf_vals, 0,
+                               where=[v < 0 for v in smf_vals],
+                               color="#FF6347", alpha=0.15, interpolate=True)
+
+            # Strong zones highlight
+            ax_smf.fill_between(xs, 0.4, 1.0, color="#00FF7F", alpha=0.04)
+            ax_smf.fill_between(xs, -1.0, -0.4, color="#FF6347", alpha=0.04)
+
+            # Current value badge
+            cur_val = smf_vals[-1]
+            badge_c = "#00FF7F" if cur_val > 0.1 else ("#FF6347" if cur_val < -0.1 else "#888")
+            ax_smf.text(n + 0.3, cur_val, f" {cur_val:+.2f}", color=badge_c, fontsize=7,
+                       va="center", fontweight="bold",
+                       bbox=dict(boxstyle="round,pad=0.15", fc="#1a1a2e", ec=badge_c, lw=0.5))
+
+            # Divergence marker
+            smf_result = calculate_smart_money_flow(plot_df)
+            if smf_result.get("smf_diverging"):
+                div_c = "#00FF7F" if cur_val > 0 else "#FF6347"
+                ax_smf.text(n - 3, max(smf_vals[-5:]) + 0.05, "DIV!",
+                           color=div_c, fontsize=9, fontweight="bold", ha="center")
+
+            ax_smf.set_ylim(-1.05, 1.05)
+            ax_smf.set_ylabel("SMF", fontsize=7, color="#555")
+            ax_smf.yaxis.tick_right()
+            ax_smf.yaxis.set_label_position("left")
+
+            # Zone labels
+            ax_smf.text(-0.5, 0.7, "AKKUM", color="#00FF7F", fontsize=6, alpha=0.5, va="center")
+            ax_smf.text(-0.5, -0.7, "DISTRIB", color="#FF6347", fontsize=6, alpha=0.5, va="center")
+
+            ax_smf.legend(loc="upper left", fontsize=6, framealpha=0.3,
+                         facecolor="#1a1a2e", edgecolor="none", labelcolor="#aaa")
+
+    # ═══════════════════════════════════════
+    # PANEL: RSI + StochRSI (if active)
     # ═══════════════════════════════════════
     if show_rsi and panel_idx < len(axes):
         ax_rsi = axes[panel_idx]; panel_idx += 1
@@ -1601,7 +1682,7 @@ def generate_confluence_chart(df: pd.DataFrame, symbol: str, active_filters: dic
                      facecolor="#1a1a2e", edgecolor="none", labelcolor="#aaa")
 
     # ═══════════════════════════════════════
-    # PANEL 4: MACD (if active)
+    # PANEL: MACD (if active)
     # ═══════════════════════════════════════
     if show_macd and panel_idx < len(axes):
         ax_macd = axes[panel_idx]; panel_idx += 1
