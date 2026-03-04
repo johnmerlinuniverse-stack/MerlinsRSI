@@ -478,7 +478,6 @@ def scan_all(coins, tfs, smc=False):
             r["ema_trend"]=ema_scan.get("ema_trend","NEUTRAL"); r["ema_bull_count"]=ema_scan.get("ema_bull_count",0); r["ema_bear_count"]=ema_scan.get("ema_bear_count",0)
             div_scan=detect_rsi_divergence(kld[ptf])
             r["divergence"]=div_scan.get("divergence","NONE"); r["div_type"]=div_scan.get("div_type","NONE")
-            # Smart Money Flow (CLV × Volume accumulation/distribution)
             smf_d=calculate_smart_money_flow(kld[ptf])
             r["smf_value"]=smf_d["smf_value"]; r["smf_strength"]=smf_d["smf_strength"]; r["smf_trend"]=smf_d["smf_trend"]; r["smf_signal"]=smf_d["smf_signal"]; r["smf_diverging"]=smf_d["smf_diverging"]
             if smc:
@@ -1094,7 +1093,6 @@ with tab_conf:
                     "range_ratio": row.get("nr_range_ratio", 1.0),
                 }
 
-            # SMF data (precomputed in scan_all)
             smf_d = None
             if active_filters.get("smf", False) and row.get("smf_value", 0) != 0:
                 smf_d = {
@@ -1580,7 +1578,6 @@ with tab_det:
         obv = c.get("obv_trend","NEUTRAL")
         if obv == "BULLISH": bull_pts += 1; reasons_bull.append("OBV-Trend steigend")
         elif obv == "BEARISH": bear_pts += 1; reasons_bear.append("OBV-Trend fallend")
-        # Smart Money Flow
         smf_sig = c.get("smf_signal", "NEUTRAL")
         smf_div = c.get("smf_diverging", False)
         if smf_sig == "STRONG_ACCUMULATION": bull_pts += 3; reasons_bull.append(f"Smart Money Flow: starke Akkumulation ({c.get('smf_value',0):+.2f})")
@@ -2082,7 +2079,7 @@ with tab_det:
 
 **Smart Money Flow (SMF):** Misst WO der Preis innerhalb jeder Kerze schließt (CLV), gewichtet mit Volumen. Werte > +0.4 = starke Akkumulation, < -0.4 = starke Distribution. ⚡DIV = Smart Money handelt gegen den Preistrend → potentielle Trendwende.
 
-**Ideales Kauf-Setup:** RSI < 42 + EMA bullish + MACD bullish + SMF Akkumulation + Bollinger < 20% → starkes Kaufsignal mit hoher Erfolgswahrscheinlichkeit.
+**Ideales Kauf-Setup:** RSI < 42 + EMA bullish + MACD bullish + SMF Akkumulation + Bollinger < 20% → starkes Kaufsignal.
 
 **Ideales Verkauf-Setup:** RSI > 58 + EMA bearish + MACD bearish + SMF Distribution + Bollinger > 80% → starkes Verkaufsignal.""")
 
