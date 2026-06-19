@@ -25,6 +25,10 @@ EXCHANGE_PRIORITY = [
     ("kraken", ccxt.kraken),
 ]
 
+# Tracks which exchange/source actually served each symbol's data this session.
+# Populated by fetch_ohlcv_ccxt() / fetch_klines_smart() as coins are fetched.
+_coin_exchange_cache: dict = {}
+
 # Timeframe mapping (our labels → ccxt format)
 TF_MAP = {
     "1h": "1h",
@@ -101,6 +105,7 @@ def fetch_ohlcv_ccxt(symbol: str, timeframe: str, limit: int = KLINE_LIMIT) -> p
         df["quote_volume"] = df["volume"] * df["close"]
         df["trades"] = 0
 
+        _coin_exchange_cache[symbol] = name
         return df[["open_time", "open", "high", "low", "close", "volume", "quote_volume", "trades"]]
 
     except Exception:
@@ -239,6 +244,7 @@ def fetch_klines_smart(symbol: str, interval: str) -> pd.DataFrame:
     days = interval_to_days.get(interval, 7)
     df = get_coingecko_ohlc(symbol, days=days)
     if not df.empty:
+        _coin_exchange_cache[symbol] = "coingecko"
         return df
 
     return pd.DataFrame()
@@ -282,3 +288,86 @@ def fetch_all_market_data() -> pd.DataFrame:
 def fetch_all_tickers() -> dict:
     """Fetch all tickers via CCXT. Cached 1 min."""
     return fetch_all_tickers_ccxt()
+
+
+# ============================================================
+# FEAR & GREED INDEX (Alternative.me — free, no API key)
+# ============================================================
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def fetch_fear_greed_index() -> dict:
+    """
+    Fetch the current Crypto Fear & Greed Index.
+    Source: https://alternative.me/crypto/fear-and-greed-index/
+    Returns: {"value": int (0-100), "classification": str}
+    Cached 30 min (index updates once daily).
+    """
+    url = "https://api.alternative.me/fng/?limit=1"
+    try:
+        resp = requests.get(url, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            entries = data.get("data", [])
+            if entries:
+                latest = entries[0]
+                return {
+                    "value": int(latest.get("value", 50)),
+                    "classification": latest.get("value_classification", "Neutral"),
+                }
+    except Exception:
+        pass
+    return {"value": None, "classification": "Unknown"}
+
+
+# ============================================================
+# FUNDING RATES (CCXT perpetual swap markets)
+# ============================================================
+
+@st.cache_resource(show_spinner=False)
+def get_funding_exchange() -> tuple:
+    """
+    Find the first reachable exchange that supports batch funding rate
+    fetching on its perpetual swap market. Separate from the spot
+    exchange used for OHLCV (defaultType differs).
+    """
+    for name, exchange_cls in EXCHANGE_PRIORITY:
+        try:
+            ex = exchange_cls({
+                "enableRateLimit": True,
+                "timeout": 10000,
+                "options": {"defaultType": "swap"},
+            })
+            if ex.has.get("fetchFundingRates", False):
+                ex.load_markets()
+                return (name, ex)
+        except Exception:
+            continue
+    return ("none", None)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_funding_rates_batch() -> dict:
+    """
+    Fetch funding rates for all perpetual swap symbols in one batch call.
+    Returns {symbol: funding_rate_pct} e.g. {"BTC": 0.012, "ETH": -0.004}
+    Rate is expressed as a percentage (ccxt's raw fraction × 100) to match
+    the thresholds used in compute_individual_scores().
+    Cached 5 min — funding rates update every 8h, no need to refetch often.
+    """
+    name, ex = get_funding_exchange()
+    if ex is None:
+        return {}
+
+    try:
+        rates = ex.fetch_funding_rates()
+        result = {}
+        for pair, info in rates.items():
+            if "/USDT" not in pair:
+                continue
+            sym = pair.split("/")[0]
+            rate = info.get("fundingRate", None)
+            if rate is not None:
+                result[sym] = round(rate * 100, 4)
+        return result
+    except Exception:
+        return {}
